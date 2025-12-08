@@ -3,6 +3,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import database  # Tu conexión a Railway
+from psycopg2.extensions import register_adapter, AsIs
 
 app = FastAPI(
     title="ERP-SOM API",
@@ -52,7 +53,7 @@ def get_paises(continente: str):
         SELECT p.nombre
         FROM pais p
         JOIN continente c ON c.id = p.continente_id
-        WHERE c.nombre = %s
+        WHERE unaccent(c.nombre) ILIKE unaccent(%s)
         ORDER BY p.nombre;
     """, (continente,), fetch=True)
     return [row[0] for row in data]
@@ -67,7 +68,7 @@ def get_puertos(pais: str):
         SELECT pu.nombre
         FROM puerto pu
         JOIN pais pa ON pa.id = pu.pais_id
-        WHERE pa.nombre = %s
+        WHERE unaccent(pa.nombre) ILIKE unaccent(%s)
         ORDER BY pu.nombre;
     """, (pais,), fetch=True)
     return [row[0] for row in data]

@@ -35,10 +35,11 @@ def home():
 # ======================================
 @app.get("/continentes")
 def get_continentes():
-    data = database.sql(
-        "SELECT nombre FROM continentes ORDER BY nombre;",
-        fetch=True
-    )
+    data = database.sql("""
+        SELECT nombre
+        FROM continente
+        ORDER BY nombre;
+    """, fetch=True)
     return [row[0] for row in data]
 
 
@@ -49,12 +50,11 @@ def get_continentes():
 def get_paises(continente: str):
     data = database.sql("""
         SELECT p.nombre
-        FROM paises p
-        JOIN continentes c ON c.id_continente = p.continente_id
+        FROM pais p
+        JOIN continente c ON c.id = p.continente_id
         WHERE c.nombre = %s
         ORDER BY p.nombre;
     """, (continente,), fetch=True)
-
     return [row[0] for row in data]
 
 
@@ -64,13 +64,12 @@ def get_paises(continente: str):
 @app.get("/puertos")
 def get_puertos(pais: str):
     data = database.sql("""
-        SELECT p.nombre
-        FROM puertos p
-        JOIN paises pa ON pa.id_pais = p.pais_id
+        SELECT pu.nombre
+        FROM puerto pu
+        JOIN pais pa ON pa.id = pu.pais_id
         WHERE pa.nombre = %s
-        ORDER BY p.nombre;
+        ORDER BY pu.nombre;
     """, (pais,), fetch=True)
-
     return [row[0] for row in data]
 
 

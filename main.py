@@ -11,6 +11,7 @@ import database
 # Router de empleados (separado y limpio)
 from routers.empleados import router as empleados_router
 from routers.surveyores import router as surveyores_router
+from routers.clientes import router as clientes_router
 
 
 # ============================================================
@@ -91,6 +92,8 @@ def get_puertos(pais: str):
 # ============================================================
 app.include_router(empleados_router)   # 👈 Aquí se monta el CRUD de empleados
 app.include_router(surveyores_router)
+app.include_router(clientes_router)
+
 
 
 # ============================================================

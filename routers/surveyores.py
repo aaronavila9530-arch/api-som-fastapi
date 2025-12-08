@@ -4,6 +4,7 @@ import database
 
 router = APIRouter(prefix="/surveyores", tags=["Surveyores"])
 
+
 @router.post("/add")
 def add_surveyor(data: dict):
     sql = """
@@ -11,7 +12,7 @@ def add_surveyor(data: dict):
             Codigo, Nombre, Apellidos, EstadoCivil, Genero,
             Nacionalidad, Prefijo, Telefono, Provincia, Canton,
             Distrito, Direccion, Jornada, Pago, Banco,
-            CuentaIBAN, Moneda, SwiftCode, UID,
+            CuentaIBAN, Moneda, swiftCode, uID,
             Enfermedades, ContactoEmergencia, TelEmergencia,
             Activo1, Marca1, Serial1,
             Activo2, Marca2, Serial2,
@@ -26,7 +27,7 @@ def add_surveyor(data: dict):
             %(activo1)s, %(marca1)s, %(serial1)s,
             %(activo2)s, %(marca2)s, %(serial2)s,
             %(activo3)s, %(marca3)s, %(serial3)s
-        )
+        );
     """
     database.sql(sql, data, commit=True)
     return {"status": "OK", "msg": "Surveyor registrado 💾✔"}

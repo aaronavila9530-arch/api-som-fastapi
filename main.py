@@ -1,39 +1,50 @@
+# ============================================================
 # main.py — API backend ERP-SOM (FASTAPI)
+# ============================================================
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-import database  # Tu conexión a Railway
-from psycopg2.extensions import register_adapter, AsIs
 
+# Conexión SQL
+import database
+
+# Router de empleados (separado y limpio)
+from routers.empleados import router as empleados_router
+
+
+# ============================================================
+# CONFIGURACIÓN FASTAPI
+# ============================================================
 app = FastAPI(
     title="ERP-SOM API",
     version="1.0",
-    description="API para Continentes, Países y Puertos — ERP SOM"
+    description="API para Continentes, Países, Puertos y Empleados — ERP SOM"
 )
 
-# ======================================
-# CORS (permite llamadas desde el ERP)
-# ======================================
+
+# ============================================================
+# CORS — Permite que el ERP Tkinter acceda sin restricciones
+# ============================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # luego se puede restringir
+    allow_origins=["*"],  # luego se restringe a tu dominio
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# ======================================
+# ============================================================
 # HEALTH CHECK
-# ======================================
+# ============================================================
 @app.get("/")
 def home():
     return {"status": "API Online ✔"}
 
 
-# ======================================
+# ============================================================
 # ENDPOINT: Continentes
-# ======================================
+# ============================================================
 @app.get("/continentes")
 def get_continentes():
     data = database.sql("""
@@ -44,9 +55,9 @@ def get_continentes():
     return [row[0] for row in data]
 
 
-# ======================================
+# ============================================================
 # ENDPOINT: Países por continente
-# ======================================
+# ============================================================
 @app.get("/paises")
 def get_paises(continente: str):
     data = database.sql("""
@@ -59,9 +70,9 @@ def get_paises(continente: str):
     return [row[0] for row in data]
 
 
-# ======================================
+# ============================================================
 # ENDPOINT: Puertos por país
-# ======================================
+# ============================================================
 @app.get("/puertos")
 def get_puertos(pais: str):
     data = database.sql("""
@@ -74,9 +85,15 @@ def get_puertos(pais: str):
     return [row[0] for row in data]
 
 
-# ======================================
-# EJECUCIÓN LOCAL (no Railway)
-# ======================================
+# ============================================================
+# INTEGRACIÓN DE ROUTERS
+# ============================================================
+app.include_router(empleados_router)   # 👈 Aquí se monta el CRUD de empleados
+
+
+# ============================================================
+# EJECUCIÓN LOCAL
+# ============================================================
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8080, reload=True)

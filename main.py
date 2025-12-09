@@ -80,7 +80,7 @@ def get_puertos(pais: str):
         WHERE unaccent(pa.nombre) ILIKE unaccent(%s)
         ORDER BY pu.nombre;
     """, (pais,), fetch=True)
-    return [row[0] for row in data]
+    return [row[0] for row[0] in data]
 
 # ============================================================
 # INTEGRACIÓN DE ROUTERS (CRUD maestros)
@@ -96,4 +96,4 @@ app.include_router(servicios_router)
 # ============================================================
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8080, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=8080)

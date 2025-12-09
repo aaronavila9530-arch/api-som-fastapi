@@ -72,7 +72,12 @@ def add_proveedor(data: dict):
 def ultimo_codigo():
     try:
         res = database.sql(
-            "SELECT codigo FROM proveedor ORDER BY id DESC LIMIT 1;",
+            """
+            SELECT codigo
+            FROM proveedor
+            ORDER BY CAST(split_part(codigo, '-', 2) AS INTEGER) DESC
+            LIMIT 1;
+            """,
             fetch=True
         )
         if res:

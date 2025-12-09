@@ -12,7 +12,7 @@ def add_proveedor(data: dict):
             codigo, nombre, apellidos, nombrecomercial, cedula_vat,
             pais, provincia, canton, distrito, direccionexacta,
             prefijo, telefono, correo, terminospago, banco,
-            cuentaiban, swiftcode, uid, direccionbanco,
+            cuenta_iban, swiftcode, uid, direccionbanco,
             tipoproveeduria, comentarios
         )
         VALUES (

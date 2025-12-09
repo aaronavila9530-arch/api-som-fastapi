@@ -3,17 +3,16 @@ import database
 
 router = APIRouter(prefix="/proveedores", tags=["Proveedores"])
 
-
 @router.post("/add")
 def add_proveedor(data: dict):
     try:
         sql = """
         INSERT INTO proveedor (
-            codigo, nombre, apellidos, nombrecomercial, cedula,
-            pais, provincia, canton, distrito, direccionexacta,
-            prefijo, telefono, correo, terminosPago, banco,
-            cuentaiban, swiftcode, uid, direccionbanco,
-            tipoproveeduria, comentarios
+            codigo, nombre, apellidos, nombrecomercial, cedula_vat,
+            pais_id, provincia, canton, distrito, direccion,
+            prefijo, telefono, email, terminos_pago, banco,
+            cuenta_iban, swiftcode, uid, direccion_bancaria,
+            tipo_producto, comentario
         )
         VALUES (
             %(Codigo)s, %(Nombre)s, %(Apellidos)s, %(NombreComercial)s, %(Cedula)s,

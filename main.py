@@ -12,7 +12,8 @@ import database
 from routers.empleados import router as empleados_router
 from routers.surveyores import router as surveyores_router
 from routers.clientes import router as clientes_router
-
+from backend_api.routers import proveedores
+from routers import servicios_md
 
 # ============================================================
 # CONFIGURACIÓN FASTAPI
@@ -93,6 +94,8 @@ def get_puertos(pais: str):
 app.include_router(empleados_router)   # 👈 Aquí se monta el CRUD de empleados
 app.include_router(surveyores_router)
 app.include_router(clientes_router)
+app.include_router(proveedores.router)
+app.include_router(servicios_md.router)
 
 
 

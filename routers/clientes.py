@@ -43,8 +43,8 @@ def add_cliente(data: dict):
                 %(ContactoPrincipal)s,
                 %(ContactoSecundario)s,
                 %(Comentarios)s
-            )
-        """, data, commit=True)
+            );
+        """, data)  # ⬅❌ antes commit=True
 
         return {"status": "OK", "msg": "Cliente registrado 💾✔"}
 

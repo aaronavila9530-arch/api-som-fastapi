@@ -8,13 +8,12 @@ from fastapi.middleware.cors import CORSMiddleware
 # Conexión SQL
 import database
 
-# Router de empleados (separado y limpio)
-app.include_router(empleados_router, prefix="/empleados", tags=["Empleados"])
-app.include_router(surveyores_router, prefix="/surveyores", tags=["Surveyores"])
-app.include_router(clientes_router, prefix="/clientes", tags=["Clientes"])
-app.include_router(proveedores_router, prefix="/proveedores", tags=["Proveedores"])
-app.include_router(servicios_router, prefix="/servicios", tags=["Servicios"])
-
+# Routers (todos viven en la carpeta routers/)
+from routers.empleados import router as empleados_router
+from routers.surveyores import router as surveyores_router
+from routers.clientes import router as clientes_router
+from routers.proveedores import router as proveedores_router
+from routers.servicios_md import router as servicios_router
 
 # ============================================================
 # CONFIGURACIÓN FASTAPI
@@ -25,18 +24,16 @@ app = FastAPI(
     description="API para Continentes, Países, Puertos y Empleados — ERP SOM"
 )
 
-
 # ============================================================
 # CORS — Permite que el ERP Tkinter acceda sin restricciones
 # ============================================================
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # luego se restringe a tu dominio
+    allow_origins=["*"],  # luego lo puedes restringir
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # ============================================================
 # HEALTH CHECK
@@ -44,7 +41,6 @@ app.add_middleware(
 @app.get("/")
 def home():
     return {"status": "API Online ✔"}
-
 
 # ============================================================
 # ENDPOINT: Continentes
@@ -57,7 +53,6 @@ def get_continentes():
         ORDER BY nombre;
     """, fetch=True)
     return [row[0] for row in data]
-
 
 # ============================================================
 # ENDPOINT: Países por continente
@@ -73,7 +68,6 @@ def get_paises(continente: str):
     """, (continente,), fetch=True)
     return [row[0] for row in data]
 
-
 # ============================================================
 # ENDPOINT: Puertos por país
 # ============================================================
@@ -88,17 +82,14 @@ def get_puertos(pais: str):
     """, (pais,), fetch=True)
     return [row[0] for row in data]
 
-
 # ============================================================
-# INTEGRACIÓN DE ROUTERS
+# INTEGRACIÓN DE ROUTERS (CRUD maestros)
 # ============================================================
-app.include_router(empleados_router)   # 👈 Aquí se monta el CRUD de empleados
+app.include_router(empleados_router)
 app.include_router(surveyores_router)
 app.include_router(clientes_router)
-app.include_router(proveedores.router)
-app.include_router(servicios_md.router)
-
-
+app.include_router(proveedores_router)
+app.include_router(servicios_router)
 
 # ============================================================
 # EJECUCIÓN LOCAL

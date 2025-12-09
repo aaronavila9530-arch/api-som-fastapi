@@ -9,10 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 import database
 
 # Router de empleados (separado y limpio)
-from routers.empleados import router as empleados_router
-from routers.surveyores import router as surveyores_router
-from routers.clientes import router as clientes_router
-from backend_api.routers import proveedores
+from backend_api.routers import empleados
+from backend_api.routers import surveyores
+from backend_api.routers import clientes
+from routers import proveedores
 from routers import servicios_md
 
 # ============================================================

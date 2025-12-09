@@ -1,6 +1,6 @@
 # backend_api/routers/proveedores.py
 from fastapi import APIRouter
-import backend_api.database as database
+import database
 
 router = APIRouter(prefix="/proveedores", tags=["Proveedores"])
 

@@ -9,11 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 import database
 
 # Router de empleados (separado y limpio)
-from backend_api.routers import empleados
-from backend_api.routers import surveyores
-from backend_api.routers import clientes
-from routers import proveedores
-from routers import servicios_md
+app.include_router(empleados_router, prefix="/empleados", tags=["Empleados"])
+app.include_router(surveyores_router, prefix="/surveyores", tags=["Surveyores"])
+app.include_router(clientes_router, prefix="/clientes", tags=["Clientes"])
+app.include_router(proveedores_router, prefix="/proveedores", tags=["Proveedores"])
+app.include_router(servicios_router, prefix="/servicios", tags=["Servicios"])
+
 
 # ============================================================
 # CONFIGURACIÓN FASTAPI

@@ -63,7 +63,7 @@ def add_surveyor(data: dict):
             %(puerto)s
         );
         """
-        database.sql(sql, data, commit=True)
+        database.sql(sql, data)
         return {"status": "OK", "msg": "Surveyor registrado 💾✔"}
 
     except Exception as e:

@@ -173,7 +173,7 @@ def update_empleado(data: dict):
             apellidos = %(apellidos)s,
             estado_civil = %(estado_civil)s,
             genero = %(genero)s,
-            nacionalidad = %(nacionalidad)s,
+            -- nacionalidad se mantiene igual porque el front no la envía
             prefijo = %(prefijo)s,
             telefono = %(telefono)s,
             provincia = %(provincia)s,
@@ -197,8 +197,8 @@ def update_empleado(data: dict):
             serial2 = %(serial2)s,
             activo3 = %(activo3)s,
             marca3 = %(marca3)s,
-            serial3 = %(serial3)s,
-            fecharegistro = %(fecharegistro)s
+            serial3 = %(serial3)s
+            -- fecharegistro también se deja intacto
         WHERE codigo = %(codigo)s
     """
     database.sql(sql, data)

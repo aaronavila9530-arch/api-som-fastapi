@@ -14,6 +14,7 @@ from routers.surveyores import router as surveyores_router
 from routers.clientes import router as clientes_router
 from routers.proveedores import router as proveedores_router
 from routers.servicios_md import router as servicios_router
+from routers.servicios_op import router as servicios_router
 
 # ============================================================
 # CONFIGURACIÓN FASTAPI
@@ -89,6 +90,7 @@ app.include_router(empleados_router)
 app.include_router(surveyores_router)
 app.include_router(clientes_router)
 app.include_router(proveedores_router)
+app.include_router(servicios_router)
 app.include_router(servicios_router)
 
 # ============================================================

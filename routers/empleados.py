@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException
-import database   # 🔥 Igual que Servicios
+import database
 
 router = APIRouter(prefix="/empleados", tags=["Empleados"])
+
 
 
 class Empleado(BaseModel):
@@ -78,7 +79,7 @@ def agregar_empleado(emp: Empleado):
 
 
 # ============================================================
-# LISTAR EMPLEADOS — PAGINADO (idéntico a Servicios)
+# LISTAR empleados — paginado
 # ============================================================
 @router.get("/")
 def get_empleados(page: int = 1, page_size: int = 50):
@@ -112,17 +113,17 @@ def get_empleados(page: int = 1, page_size: int = 50):
 
     data = []
     for r in rows:
-        fila = {}
-        for i, col in enumerate(columnas):
+        item = {}
+        for i, c in enumerate(columnas):
             v = r[i]
-            fila[col] = "" if v is None else str(v)
-        data.append(fila)
+            item[c] = "" if v is None else str(v)
+        data.append(item)
 
     return {"data": data, "total": total}
 
 
 # ============================================================
-# GET POR CÓDIGO — Igual que Servicios
+# GET por código
 # ============================================================
 @router.get("/{codigo}")
 def get_empleado(codigo: str):
@@ -152,14 +153,11 @@ def get_empleado(codigo: str):
         "activo2", "marca2", "serial2",
         "activo3", "marca3", "serial3",
     ]
-    return {
-        col: ("" if r[i] is None else str(r[i]))
-        for i, col in enumerate(columnas)
-    }
+    return {c: ("" if r[i] is None else str(r[i])) for i, c in enumerate(columnas)}
 
 
 # ============================================================
-# UPDATE — 100% alineado
+# UPDATE — alineado con front
 # ============================================================
 @router.put("/update")
 def update_empleado(data: dict):
@@ -201,7 +199,7 @@ def update_empleado(data: dict):
 
 
 # ============================================================
-# DELETE — igual que Servicios
+# DELETE
 # ============================================================
 @router.delete("/{codigo}")
 def delete_empleado(codigo: str):

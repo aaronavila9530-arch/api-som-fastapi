@@ -83,7 +83,7 @@ def agregar_empleado(emp: Empleado):
 
 
 # ============================================================
-# GET POR CÓDIGO — igual que Servicios
+# LISTAR EMPLEADOS — Paginado (Corregido)
 # ============================================================
 @router.get("/")
 def get_empleados(page: int = 1, page_size: int = 50):
@@ -105,43 +105,25 @@ def get_empleados(page: int = 1, page_size: int = 50):
 
     total = database.sql("SELECT COUNT(*) FROM empleados", fetch=True)[0][0]
 
-    data = [
-        {
-            "codigo": r[0],
-            "nombre": r[1],
-            "apellidos": r[2],
-            "estado_civil": r[3],
-            "genero": r[4],
-            "nacionalidad": r[5],
-            "prefijo": r[6],
-            "telefono": r[7],
-            "provincia": r[8],
-            "canton": r[9],
-            "distrito": r[10],
-            "direccion": r[11],
-            "jornada": r[12],
-            "salario": r[13],
-            "pago": r[14],
-            "banco": r[15],
-            "cuenta_iban": r[16],
-            "moneda": r[17],
-            "enfermedades": r[18],
-            "contacto_emergencia": r[19],
-            "telefono_emergencia": r[20],
-            "activo1": r[21],
-            "marca1": r[22],
-            "serial1": r[23],
-            "activo2": r[24],
-            "marca2": r[25],
-            "serial2": r[26],
-            "activo3": r[27],
-            "marca3": r[28],
-            "serial3": r[29],
-        }
-        for r in rows
+    columnas = [
+        "codigo","nombre","apellidos","estado_civil","genero","nacionalidad",
+        "prefijo","telefono","provincia","canton","distrito","direccion",
+        "jornada","salario","pago","banco","cuenta_iban","moneda",
+        "enfermedades","contacto_emergencia","telefono_emergencia",
+        "activo1","marca1","serial1",
+        "activo2","marca2","serial2",
+        "activo3","marca3","serial3",
     ]
 
-    return {"data": data, "total": total}   # ← ORDEN CORRECTO
+    data = []
+    for r in rows:
+        fila = {}
+        for i, col in enumerate(columnas):
+            valor = r[i]
+            fila[col] = "" if valor is None else str(valor)
+        data.append(fila)
+
+    return {"data": data, "total": total}
 
 
 # ============================================================

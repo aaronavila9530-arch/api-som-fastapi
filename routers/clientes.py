@@ -54,6 +54,12 @@ def add_cliente(data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+from fastapi import APIRouter, HTTPException
+import database
+
+router = APIRouter(prefix="/clientes", tags=["Clientes"])
+
+
 # ============================================================
 # LISTAR CLIENTES — PAGINADO
 # ============================================================
@@ -89,23 +95,23 @@ def get_clientes(page: int = 1, page_size: int = 50):
 
     data = [
         {
-            "codigo": r[0],
-            "nombrejuridico": r[1],
-            "nombrecomercial": r[2],
-            "pais": r[3],
-            "correo": r[4],
-            "telefono": r[5],
-            "cedulajuridicavat": r[6],
-            "actividad_economica": r[7],
-            "comentarios": r[8],
-            "provincia": r[9],
-            "canton": r[10],
-            "distrito": r[11],
-            "direccionexacta": r[12],
-            "fecha_pago": r[13],
-            "prefijo": r[14],
-            "contacto_principal": r[15],
-            "contacto_secundario": r[16],
+            "Codigo": r[0],
+            "NombreJuridico": r[1],
+            "NombreComercial": r[2],
+            "Pais": r[3],
+            "Correo": r[4],
+            "Telefono": r[5],
+            "CedulaJuridicaVAT": r[6],
+            "ActividadEconomica": r[7],
+            "Comentarios": r[8],
+            "Provincia": r[9],
+            "Canton": r[10],
+            "Distrito": r[11],
+            "DireccionExacta": r[12],
+            "FechaDePago": r[13],
+            "Prefijo": r[14],
+            "ContactoPrincipal": r[15],
+            "ContactoSecundario": r[16],
         }
         for r in rows
     ]
@@ -146,28 +152,28 @@ def get_cliente(codigo: str):
 
     r = row[0]
     return {
-        "codigo": r[0],
-        "nombrejuridico": r[1],
-        "nombrecomercial": r[2],
-        "pais": r[3],
-        "correo": r[4],
-        "telefono": r[5],
-        "cedulajuridicavat": r[6],
-        "actividad_economica": r[7],
-        "comentarios": r[8],
-        "provincia": r[9],
-        "canton": r[10],
-        "distrito": r[11],
-        "direccionexacta": r[12],
-        "fecha_pago": r[13],
-        "prefijo": r[14],
-        "contacto_principal": r[15],
-        "contacto_secundario": r[16],
+        "Codigo": r[0],
+        "NombreJuridico": r[1],
+        "NombreComercial": r[2],
+        "Pais": r[3],
+        "Correo": r[4],
+        "Telefono": r[5],
+        "CedulaJuridicaVAT": r[6],
+        "ActividadEconomica": r[7],
+        "Comentarios": r[8],
+        "Provincia": r[9],
+        "Canton": r[10],
+        "Distrito": r[11],
+        "DireccionExacta": r[12],
+        "FechaDePago": r[13],
+        "Prefijo": r[14],
+        "ContactoPrincipal": r[15],
+        "ContactoSecundario": r[16],
     }
 
 
 # ============================================================
-# ACTUALIZAR CLIENTE — llaves alineadas con UI
+# ACTUALIZAR CLIENTE — nombres alineados con UI
 # ============================================================
 @router.put("/update")
 def update_cliente(data: dict):

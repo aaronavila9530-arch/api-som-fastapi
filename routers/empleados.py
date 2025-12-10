@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 import database
 
 router = APIRouter(prefix="/empleados", tags=["Empleados"])
@@ -93,7 +94,8 @@ def get_empleados(page: int = 1, page_size: int = 50):
             enfermedades, contacto_emergencia, telefono_emergencia,
             activo1, marca1, serial1,
             activo2, marca2, serial2,
-            activo3, marca3, serial3
+            activo3, marca3, serial3,
+            fecharegistro
         FROM empleados
         ORDER BY codigo ASC
         LIMIT {page_size} OFFSET {offset}
@@ -109,6 +111,7 @@ def get_empleados(page: int = 1, page_size: int = 50):
         "activo1", "marca1", "serial1",
         "activo2", "marca2", "serial2",
         "activo3", "marca3", "serial3",
+        "fecharegistro"
     ]
 
     data = []
@@ -135,7 +138,8 @@ def get_empleado(codigo: str):
             enfermedades, contacto_emergencia, telefono_emergencia,
             activo1, marca1, serial1,
             activo2, marca2, serial2,
-            activo3, marca3, serial3
+            activo3, marca3, serial3,
+            fecharegistro
         FROM empleados
         WHERE codigo = %s
     """, (codigo,), fetch=True)
@@ -152,7 +156,9 @@ def get_empleado(codigo: str):
         "activo1", "marca1", "serial1",
         "activo2", "marca2", "serial2",
         "activo3", "marca3", "serial3",
+        "fecharegistro"
     ]
+
     return {c: ("" if r[i] is None else str(r[i])) for i, c in enumerate(columnas)}
 
 
@@ -191,7 +197,8 @@ def update_empleado(data: dict):
             serial2 = %(serial2)s,
             activo3 = %(activo3)s,
             marca3 = %(marca3)s,
-            serial3 = %(serial3)s
+            serial3 = %(serial3)s,
+            fecharegistro = %(fecharegistro)s
         WHERE codigo = %(codigo)s
     """
     database.sql(sql, data)

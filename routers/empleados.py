@@ -83,7 +83,7 @@ def agregar_empleado(emp: Empleado):
 
 
 # ============================================================
-# LISTAR EMPLEADOS — PAGINADO
+# LISTAR EMPLEADOS — PAGINADO (como Servicios)
 # ============================================================
 @router.get("/")
 def get_empleados(page: int = 1, page_size: int = 50):
@@ -106,13 +106,13 @@ def get_empleados(page: int = 1, page_size: int = 50):
     total = database.sql("SELECT COUNT(*) FROM empleados", fetch=True)[0][0]
 
     columnas = [
-        "codigo","nombre","apellidos","estado_civil","genero","nacionalidad",
-        "prefijo","telefono","provincia","canton","distrito","direccion",
-        "jornada","salario","pago","banco","cuenta_iban","moneda",
-        "enfermedades","contacto_emergencia","telefono_emergencia",
-        "activo1","marca1","serial1",
-        "activo2","marca2","serial2",
-        "activo3","marca3","serial3",
+        "codigo", "nombre", "apellidos", "estado_civil", "genero", "nacionalidad",
+        "prefijo", "telefono", "provincia", "canton", "distrito", "direccion",
+        "jornada", "salario", "pago", "banco", "cuenta_iban", "moneda",
+        "enfermedades", "contacto_emergencia", "telefono_emergencia",
+        "activo1", "marca1", "serial1",
+        "activo2", "marca2", "serial2",
+        "activo3", "marca3", "serial3",
     ]
 
     data = []
@@ -127,7 +127,7 @@ def get_empleados(page: int = 1, page_size: int = 50):
 
 
 # ============================================================
-# GET POR CÓDIGO
+# OBTENER UN EMPLEADO POR CÓDIGO
 # ============================================================
 @router.get("/{codigo}")
 def get_empleado(codigo: str):
@@ -148,19 +148,23 @@ def get_empleado(codigo: str):
         raise HTTPException(status_code=404, detail="Empleado no encontrado")
 
     r = row[0]
-    return {col: ("" if r[i] is None else str(r[i])) for i, col in enumerate([
-        "codigo","nombre","apellidos","estado_civil","genero","nacionalidad",
-        "prefijo","telefono","provincia","canton","distrito","direccion",
-        "jornada","salario","pago","banco","cuenta_iban","moneda",
-        "enfermedades","contacto_emergencia","telefono_emergencia",
-        "activo1","marca1","serial1",
-        "activo2","marca2","serial2",
-        "activo3","marca3","serial3",
-    ])}
+    columnas = [
+        "codigo", "nombre", "apellidos", "estado_civil", "genero", "nacionalidad",
+        "prefijo", "telefono", "provincia", "canton", "distrito", "direccion",
+        "jornada", "salario", "pago", "banco", "cuenta_iban", "moneda",
+        "enfermedades", "contacto_emergencia", "telefono_emergencia",
+        "activo1", "marca1", "serial1",
+        "activo2", "marca2", "serial2",
+        "activo3", "marca3", "serial3",
+    ]
+    return {
+        col: ("" if r[i] is None else str(r[i]))
+        for i, col in enumerate(columnas)
+    }
 
 
 # ============================================================
-# UPDATE
+# ACTUALIZAR EMPLEADO
 # ============================================================
 @router.put("/update")
 def update_empleado(data: dict):
@@ -202,7 +206,7 @@ def update_empleado(data: dict):
 
 
 # ============================================================
-# DELETE
+# ELIMINAR EMPLEADO
 # ============================================================
 @router.delete("/{codigo}")
 def delete_empleado(codigo: str):

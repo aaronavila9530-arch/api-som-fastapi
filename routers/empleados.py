@@ -42,7 +42,7 @@ class Empleado(BaseModel):
     serial3: str | None = None
 
 
-@router.post("")
+@router.post("/add")
 def agregar_empleado(emp: Empleado):
     try:
         conn = psycopg2.connect(DB_URL)
@@ -50,14 +50,15 @@ def agregar_empleado(emp: Empleado):
 
         cursor.execute("""
             INSERT INTO empleados (
-                Codigo, Nombre, Apellidos, EstadoCivil, Genero, Nacionalidad,
-                Prefijo, Telefono, Provincia, Canton, Distrito, Direccion,
-                Jornada, Salario, Pago, Banco, CuentaIBAN, Moneda,
-                Enfermedades, ContactoEmergencia, TelefonoEmergencia,
-                Activo1, Marca1, Serial1,
-                Activo2, Marca2, Serial2,
-                Activo3, Marca3, Serial3
-            ) VALUES (
+                codigo, nombre, apellidos, estado_civil, genero, nacionalidad,
+                prefijo, telefono, provincia, canton, distrito, direccion,
+                jornada, salario, pago, banco, cuenta_iban, moneda,
+                enfermedades, contacto_emergencia, telefono_emergencia,
+                activo1, marca1, serial1,
+                activo2, marca2, serial2,
+                activo3, marca3, serial3
+            )
+            VALUES (
                 %(codigo)s, %(nombre)s, %(apellidos)s, %(estado_civil)s, %(genero)s, %(nacionalidad)s,
                 %(prefijo)s, %(telefono)s, %(provincia)s, %(canton)s, %(distrito)s, %(direccion)s,
                 %(jornada)s, %(salario)s, %(pago)s, %(banco)s, %(cuenta_iban)s, %(moneda)s,
@@ -65,16 +66,16 @@ def agregar_empleado(emp: Empleado):
                 %(activo1)s, %(marca1)s, %(serial1)s,
                 %(activo2)s, %(marca2)s, %(serial2)s,
                 %(activo3)s, %(marca3)s, %(serial3)s
-            )
+            );
         """, emp.dict())
 
         conn.commit()
 
-        return {"status": "OK", "mensaje": "Empleado guardado correctamente"}
+        return {"status": "OK", "msg": "Empleado registrado 💾✔"}
 
     except Exception as e:
-        print("❌ Error API empleados:", e)
-        raise HTTPException(status_code=500, detail="Error guardando empleado")
+        print("❌ Error API empleados:", str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
     finally:
         cursor.close()

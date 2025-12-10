@@ -1,12 +1,7 @@
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
-import psycopg2
-import os
+import database   # 🔥 Conexión unificada como Servicios / Clientes / Proveedores / Surveyores
 
 router = APIRouter(prefix="/empleados", tags=["Empleados"])
-
-DB_URL = os.getenv("DATABASE_URL") or \
-         "postgresql://postgres:LjjyuIUsTSCdiwPVHSSwtIYPOsRQytGX@shortline.proxy.rlwy.net:50018/railway"
 
 
 class Empleado(BaseModel):

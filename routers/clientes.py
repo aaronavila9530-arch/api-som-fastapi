@@ -55,19 +55,6 @@ def add_cliente(data: dict):
 
 
 # ============================================================
-# OBTENER ÚLTIMO CÓDIGO CORRELATIVO
-# ============================================================
-@router.get("/ultimo")
-def get_ultimo_codigo():
-    res = database.sql("""
-        SELECT MAX(CAST(split_part(codigo, '-', 2) AS INTEGER))
-        FROM cliente;
-    """, fetch=True)
-
-    ultimo = res[0][0] if res and res[0][0] else 0
-    return {"ultimo": ultimo}
-
-# ============================================================
 # LISTAR CLIENTES — PAGINADO
 # ============================================================
 @router.get("/")
@@ -91,12 +78,12 @@ def get_clientes(page: int = 1, page_size: int = 50):
 
     data = [
         {
-            "codigo": r[0],
-            "nombre_juridico": r[1],
-            "nombre_comercial": r[2],
-            "pais": r[3],
-            "correo": r[4],
-            "telefono": r[5],
+            "Codigo": r[0],
+            "NombreJuridico": r[1],
+            "NombreComercial": r[2],
+            "Pais": r[3],
+            "Correo": r[4],
+            "Telefono": r[5],
         }
         for r in rows
     ]
@@ -136,22 +123,22 @@ def get_cliente(codigo: str):
 
     r = row[0]
     return {
-        "codigo": r[0],
-        "nombre_juridico": r[1],
-        "nombre_comercial": r[2],
-        "pais": r[3],
-        "correo": r[4],
-        "telefono": r[5],
-        "cedula_juridica_vat": r[6],
-        "provincia": r[7],
-        "canton": r[8],
-        "distrito": r[9],
-        "direccion_exacta": r[10],
-        "fecha_de_pago": r[11],
-        "prefijo": r[12],
-        "contacto_principal": r[13],
-        "contacto_secundario": r[14],
-        "comentarios": r[15]
+        "Codigo": r[0],
+        "NombreJuridico": r[1],
+        "NombreComercial": r[2],
+        "Pais": r[3],
+        "Correo": r[4],
+        "Telefono": r[5],
+        "CedulaJuridicaVAT": r[6],
+        "Provincia": r[7],
+        "Canton": r[8],
+        "Distrito": r[9],
+        "DireccionExacta": r[10],
+        "FechaDePago": r[11],
+        "Prefijo": r[12],
+        "ContactoPrincipal": r[13],
+        "ContactoSecundario": r[14],
+        "Comentarios": r[15]
     }
 
 
@@ -162,28 +149,25 @@ def get_cliente(codigo: str):
 def update_cliente(data: dict):
     sql = """
         UPDATE cliente SET
-            nombrejuridico = %(nombre_juridico)s,
-            nombrecomercial = %(nombre_comercial)s,
-            pais = %(pais)s,
-            correo = %(correo)s,
-            telefono = %(telefono)s,
-            cedulajuridicavat = %(cedula_juridica_vat)s,
-            comentarios = %(comentarios)s,
-            provincia = %(provincia)s,
-            canton = %(canton)s,
-            distrito = %(distrito)s,
-            direccionexacta = %(direccion_exacta)s,
-            fecha_pago = %(fecha_de_pago)s,
-            prefijo = %(prefijo)s,
-            contacto_principal = %(contacto_principal)s,
-            contacto_secundario = %(contacto_secundario)s
-        WHERE codigo = %(codigo)s
+            nombrejuridico = %(NombreJuridico)s,
+            nombrecomercial = %(NombreComercial)s,
+            pais = %(Pais)s,
+            correo = %(Correo)s,
+            telefono = %(Telefono)s,
+            cedulajuridicavat = %(CedulaJuridicaVAT)s,
+            comentarios = %(Comentarios)s,
+            provincia = %(Provincia)s,
+            canton = %(Canton)s,
+            distrito = %(Distrito)s,
+            direccionexacta = %(DireccionExacta)s,
+            fecha_pago = %(FechaDePago)s,
+            prefijo = %(Prefijo)s,
+            contacto_principal = %(ContactoPrincipal)s,
+            contacto_secundario = %(ContactoSecundario)s
+        WHERE codigo = %(Codigo)s
     """
-    try:
-        database.sql(sql, data)
-        return {"status": "OK", "msg": "Cliente actualizado ✔"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    database.sql(sql, data)
+    return {"status": "OK", "msg": "Cliente actualizado ✔"}
 
 
 # ============================================================
@@ -191,8 +175,5 @@ def update_cliente(data: dict):
 # ============================================================
 @router.delete("/{codigo}")
 def delete_cliente(codigo: str):
-    try:
-        database.sql("DELETE FROM cliente WHERE codigo = %s", (codigo,))
-        return {"status": "OK", "msg": "Cliente eliminado 🗑️"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    database.sql("DELETE FROM cliente WHERE codigo = %s", (codigo,))
+    return {"status": "OK", "msg": "Cliente eliminado 🗑️"}

@@ -83,7 +83,7 @@ def agregar_empleado(emp: Empleado):
 
 
 # ============================================================
-# LISTAR EMPLEADOS — Paginado (Corregido)
+# LISTAR EMPLEADOS — PAGINADO
 # ============================================================
 @router.get("/")
 def get_empleados(page: int = 1, page_size: int = 50):
@@ -119,15 +119,48 @@ def get_empleados(page: int = 1, page_size: int = 50):
     for r in rows:
         fila = {}
         for i, col in enumerate(columnas):
-            valor = r[i]
-            fila[col] = "" if valor is None else str(valor)
+            v = r[i]
+            fila[col] = "" if v is None else str(v)
         data.append(fila)
 
     return {"data": data, "total": total}
 
 
 # ============================================================
-# UPDATE — 100% alineado
+# GET POR CÓDIGO
+# ============================================================
+@router.get("/{codigo}")
+def get_empleado(codigo: str):
+    row = database.sql("""
+        SELECT
+            codigo, nombre, apellidos, estado_civil, genero, nacionalidad,
+            prefijo, telefono, provincia, canton, distrito, direccion,
+            jornada, salario, pago, banco, cuenta_iban, moneda,
+            enfermedades, contacto_emergencia, telefono_emergencia,
+            activo1, marca1, serial1,
+            activo2, marca2, serial2,
+            activo3, marca3, serial3
+        FROM empleados
+        WHERE codigo = %s
+    """, (codigo,), fetch=True)
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+
+    r = row[0]
+    return {col: ("" if r[i] is None else str(r[i])) for i, col in enumerate([
+        "codigo","nombre","apellidos","estado_civil","genero","nacionalidad",
+        "prefijo","telefono","provincia","canton","distrito","direccion",
+        "jornada","salario","pago","banco","cuenta_iban","moneda",
+        "enfermedades","contacto_emergencia","telefono_emergencia",
+        "activo1","marca1","serial1",
+        "activo2","marca2","serial2",
+        "activo3","marca3","serial3",
+    ])}
+
+
+# ============================================================
+# UPDATE
 # ============================================================
 @router.put("/update")
 def update_empleado(data: dict):
@@ -164,20 +197,14 @@ def update_empleado(data: dict):
             serial3 = %(serial3)s
         WHERE codigo = %(codigo)s
     """
-    try:
-        database.sql(sql, data)
-        return {"status": "OK", "msg": "Empleado actualizado ✔"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    database.sql(sql, data)
+    return {"status": "OK", "msg": "Empleado actualizado ✔"}
 
 
 # ============================================================
-# DELETE — igual que Servicios
+# DELETE
 # ============================================================
 @router.delete("/{codigo}")
 def delete_empleado(codigo: str):
-    try:
-        database.sql("DELETE FROM empleados WHERE codigo = %s", (codigo,))
-        return {"status": "OK", "msg": "Empleado eliminado 🗑️"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    database.sql("DELETE FROM empleados WHERE codigo = %s", (codigo,))
+    return {"status": "OK", "msg": "Empleado eliminado 🗑️"}

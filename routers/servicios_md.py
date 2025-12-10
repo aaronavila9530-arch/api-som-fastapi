@@ -32,3 +32,84 @@ def get_ultimo_codigo():
 
     ultimo = data[0][0] if data and data[0][0] else 0
     return {"ultimo": ultimo}
+
+# ============================================================
+# LISTAR SERVICIOS — PAGINADO
+# ============================================================
+@router.get("/")
+def get_servicios(page: int = 1, page_size: int = 50):
+    offset = (page - 1) * page_size
+
+    rows = database.sql(f"""
+        SELECT Codigo, CodigoProd, Nombre, Costo
+        FROM ServiciosMD
+        ORDER BY Codigo ASC
+        LIMIT {page_size} OFFSET {offset}
+    """, fetch=True)
+
+    # total para paginación
+    total = database.sql("""
+        SELECT COUNT(*) FROM ServiciosMD
+    """, fetch=True)[0][0]
+
+    data = [
+        {
+            "codigo": r[0],
+            "codigo_prod": r[1],
+            "nombre": r[2],
+            "costo": r[3],
+        }
+        for r in rows
+    ]
+
+    return {"data": data, "total": total}
+
+
+# ============================================================
+# OBTENER UN SERVICIO POR CÓDIGO
+# ============================================================
+@router.get("/{codigo}")
+def get_servicio(codigo: str):
+    row = database.sql("""
+        SELECT Codigo, CodigoProd, Nombre, Costo
+        FROM ServiciosMD
+        WHERE Codigo = %s
+    """, (codigo,), fetch=True)
+
+    if not row:
+        return {"error": "Servicio no encontrado"}, 404
+
+    r = row[0]
+    return {
+        "codigo": r[0],
+        "codigo_prod": r[1],
+        "nombre": r[2],
+        "costo": r[3],
+    }
+
+
+# ============================================================
+# ACTUALIZAR SERVICIO
+# ============================================================
+@router.put("/update")
+def update_servicio(data: dict):
+    sql = """
+        UPDATE ServiciosMD SET
+            CodigoProd = %(codigo_prod)s,
+            Nombre = %(nombre)s,
+            Costo = %(costo)s
+        WHERE Codigo = %(codigo)s
+    """
+    database.sql(sql, data)
+    return {"status": "OK", "msg": "Servicio actualizado ✔"}
+
+
+# ============================================================
+# ELIMINAR SERVICIO
+# ============================================================
+@router.delete("/{codigo}")
+def delete_servicio(codigo: str):
+    database.sql("""
+        DELETE FROM ServiciosMD WHERE Codigo = %s
+    """, (codigo,))
+    return {"status": "OK", "msg": "Servicio eliminado 🗑️"}

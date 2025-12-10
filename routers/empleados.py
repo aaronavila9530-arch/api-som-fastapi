@@ -85,9 +85,11 @@ def agregar_empleado(emp: Empleado):
 # ============================================================
 # GET POR CÓDIGO — igual que Servicios
 # ============================================================
-@router.get("/{codigo}")
-def get_empleado(codigo: str):
-    row = database.sql("""
+@router.get("/")
+def get_empleados(page: int = 1, page_size: int = 50):
+    offset = (page - 1) * page_size
+
+    rows = database.sql(f"""
         SELECT
             codigo, nombre, apellidos, estado_civil, genero, nacionalidad,
             prefijo, telefono, provincia, canton, distrito, direccion,
@@ -97,45 +99,49 @@ def get_empleado(codigo: str):
             activo2, marca2, serial2,
             activo3, marca3, serial3
         FROM empleados
-        WHERE codigo = %s
-    """, (codigo,), fetch=True)
+        ORDER BY codigo ASC
+        LIMIT {page_size} OFFSET {offset}
+    """, fetch=True)
 
-    if not row:
-        raise HTTPException(status_code=404, detail="Empleado no encontrado")
+    total = database.sql("SELECT COUNT(*) FROM empleados", fetch=True)[0][0]
 
-    r = row[0]
-    return {
-        "codigo": r[0],
-        "nombre": r[1],
-        "apellidos": r[2],
-        "estado_civil": r[3],
-        "genero": r[4],
-        "nacionalidad": r[5],
-        "prefijo": r[6],
-        "telefono": r[7],
-        "provincia": r[8],
-        "canton": r[9],
-        "distrito": r[10],
-        "direccion": r[11],
-        "jornada": r[12],
-        "salario": r[13],
-        "pago": r[14],
-        "banco": r[15],
-        "cuenta_iban": r[16],
-        "moneda": r[17],
-        "enfermedades": r[18],
-        "contacto_emergencia": r[19],
-        "telefono_emergencia": r[20],
-        "activo1": r[21],
-        "marca1": r[22],
-        "serial1": r[23],
-        "activo2": r[24],
-        "marca2": r[25],
-        "serial2": r[26],
-        "activo3": r[27],
-        "marca3": r[28],
-        "serial3": r[29],
-    }
+    data = [
+        {
+            "codigo": r[0],
+            "nombre": r[1],
+            "apellidos": r[2],
+            "estado_civil": r[3],
+            "genero": r[4],
+            "nacionalidad": r[5],
+            "prefijo": r[6],
+            "telefono": r[7],
+            "provincia": r[8],
+            "canton": r[9],
+            "distrito": r[10],
+            "direccion": r[11],
+            "jornada": r[12],
+            "salario": r[13],
+            "pago": r[14],
+            "banco": r[15],
+            "cuenta_iban": r[16],
+            "moneda": r[17],
+            "enfermedades": r[18],
+            "contacto_emergencia": r[19],
+            "telefono_emergencia": r[20],
+            "activo1": r[21],
+            "marca1": r[22],
+            "serial1": r[23],
+            "activo2": r[24],
+            "marca2": r[25],
+            "serial2": r[26],
+            "activo3": r[27],
+            "marca3": r[28],
+            "serial3": r[29],
+        }
+        for r in rows
+    ]
+
+    return {"data": data, "total": total}   # ← ORDEN CORRECTO
 
 
 # ============================================================

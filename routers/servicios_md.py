@@ -77,7 +77,7 @@ def get_servicio(codigo: str):
     """, (codigo,), fetch=True)
 
     if not row:
-        return {"error": "Servicio no encontrado"}, 404
+        raise HTTPException(status_code=404, detail="Servicio no encontrado")
 
     r = row[0]
     return {
@@ -86,7 +86,6 @@ def get_servicio(codigo: str):
         "nombre": r[2],
         "costo": r[3],
     }
-
 
 # ============================================================
 # ACTUALIZAR SERVICIO

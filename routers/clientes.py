@@ -173,26 +173,29 @@ def get_cliente(codigo: str):
 def update_cliente(data: dict):
     sql = """
         UPDATE cliente SET
-            nombrejuridico = %(nombrejuridico)s,
-            nombrecomercial = %(nombrecomercial)s,
-            pais = %(pais)s,
-            correo = %(correo)s,
-            telefono = %(telefono)s,
-            cedulajuridicavat = %(cedulajuridicavat)s,
-            actividad_economica = %(actividad_economica)s,
-            comentarios = %(comentarios)s,
-            provincia = %(provincia)s,
-            canton = %(canton)s,
-            distrito = %(distrito)s,
-            direccionexacta = %(direccionexacta)s,
-            fecha_pago = %(fecha_pago)s,
-            prefijo = %(prefijo)s,
-            contacto_principal = %(contacto_principal)s,
-            contacto_secundario = %(contacto_secundario)s
-        WHERE codigo = %(codigo)s
+            nombrejuridico = %(NombreJuridico)s,
+            nombrecomercial = %(NombreComercial)s,
+            pais = %(Pais)s,
+            correo = %(Correo)s,
+            telefono = %(Telefono)s,
+            cedulajuridicavat = %(CedulaJuridicaVAT)s,
+            actividad_economica = %(ActividadEconomica)s,
+            comentarios = %(Comentarios)s,
+            provincia = %(Provincia)s,
+            canton = %(Canton)s,
+            distrito = %(Distrito)s,
+            direccionexacta = %(DireccionExacta)s,
+            fecha_pago = %(FechaDePago)s,
+            prefijo = %(Prefijo)s,
+            contacto_principal = %(ContactoPrincipal)s,
+            contacto_secundario = %(ContactoSecundario)s
+        WHERE codigo = %(Codigo)s
     """
-    database.sql(sql, data)
-    return {"status": "OK", "msg": "Cliente actualizado ✔"}
+    try:
+        database.sql(sql, data)
+        return {"status": "OK", "msg": "Cliente actualizado ✔"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================================

@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-import database   # 🔥 Conexión unificada como Servicios / Clientes / Proveedores / Surveyores
+import database   # 🔥 Igual que Servicios
 
 router = APIRouter(prefix="/empleados", tags=["Empleados"])
 
@@ -78,7 +78,7 @@ def agregar_empleado(emp: Empleado):
 
 
 # ============================================================
-# LISTAR EMPLEADOS — PAGINADO (como Servicios)
+# LISTAR EMPLEADOS — PAGINADO (idéntico a Servicios)
 # ============================================================
 @router.get("/")
 def get_empleados(page: int = 1, page_size: int = 50):
@@ -122,7 +122,7 @@ def get_empleados(page: int = 1, page_size: int = 50):
 
 
 # ============================================================
-# OBTENER UN EMPLEADO POR CÓDIGO
+# GET POR CÓDIGO — Igual que Servicios
 # ============================================================
 @router.get("/{codigo}")
 def get_empleado(codigo: str):
@@ -159,7 +159,7 @@ def get_empleado(codigo: str):
 
 
 # ============================================================
-# ACTUALIZAR EMPLEADO
+# UPDATE — 100% alineado
 # ============================================================
 @router.put("/update")
 def update_empleado(data: dict):
@@ -201,7 +201,7 @@ def update_empleado(data: dict):
 
 
 # ============================================================
-# ELIMINAR EMPLEADO
+# DELETE — igual que Servicios
 # ============================================================
 @router.delete("/{codigo}")
 def delete_empleado(codigo: str):

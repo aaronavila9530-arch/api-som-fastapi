@@ -166,9 +166,6 @@ def get_cliente(codigo: str):
     }
 
 
-# ============================================================
-# ACTUALIZAR CLIENTE
-# ============================================================
 @router.put("/update")
 def update_cliente(data: dict):
     sql = """
@@ -179,7 +176,6 @@ def update_cliente(data: dict):
             correo = %(Correo)s,
             telefono = %(Telefono)s,
             cedulajuridicavat = %(CedulaJuridicaVAT)s,
-            actividad_economica = %(ActividadEconomica)s,
             comentarios = %(Comentarios)s,
             provincia = %(Provincia)s,
             canton = %(Canton)s,

@@ -13,7 +13,7 @@ from routers.empleados import router as empleados_router
 from routers.surveyores import router as surveyores_router
 from routers.clientes import router as clientes_router
 from routers.proveedores import router as proveedores_router
-from routers.servicios_md import router as servicios_router
+from servicios_md import router as servicios_md_router
 from routers.servicios_op import router as servicios_router
 
 # ============================================================
@@ -91,7 +91,7 @@ app.include_router(surveyores_router)
 app.include_router(clientes_router)
 app.include_router(proveedores_router)
 app.include_router(servicios_router)
-app.include_router(servicios_router)
+app.include_router(servicios_md_router)
 
 # ============================================================
 # EJECUCIÓN LOCAL

@@ -145,11 +145,8 @@ def get_servicio(consec: int):
 def eliminar_servicio(consec: int):
     try:
         sql = "DELETE FROM servicios WHERE consec = %s"
-        cursor.execute(sql, (consec,))
-        conn.commit()
+        database.sql(sql, (consec,))
 
         return {"status": "ok", "msg": f"Servicio {consec} eliminado"}
     except Exception as e:
-        return {"status": "error", "error": str(e)}
-
-
+        raise HTTPException(status_code=500, detail=str(e))

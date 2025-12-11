@@ -37,3 +37,19 @@ def get_paises_cpp(continente: str):
     """, (continente,), fetch=True)
 
     return [row[0] for row in rows]
+
+
+# ============================================================
+# GET → Lista de puertos según país
+# ============================================================
+@router.get("/puertos")
+def get_puertos_cpp(pais: str):
+    rows = sql("""
+        SELECT DISTINCT puerto
+        FROM continentes_paises_puertos
+        WHERE pais = %s
+          AND puerto IS NOT NULL AND puerto <> ''
+        ORDER BY puerto;
+    """, (pais,), fetch=True)
+
+    return [row[0] for row in rows]

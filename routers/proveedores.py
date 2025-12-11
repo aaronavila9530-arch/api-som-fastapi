@@ -68,23 +68,16 @@ def add_proveedor(data: dict):
 # ============================================================
 # OBTENER ÚLTIMO CÓDIGO CORRELATIVO
 # ============================================================
-@router.get("/ultimo_codigo")
-def ultimo_codigo():
-    try:
-        res = database.sql(
-            """
-            SELECT codigo
-            FROM proveedor
-            ORDER BY CAST(split_part(codigo, '-', 2) AS INTEGER) DESC
-            LIMIT 1;
-            """,
-            fetch=True
-        )
-        if res:
-            return {"codigo": res[0]["codigo"]}
-        return {"codigo": None}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@router.get("/proveedores/ultimo")
+def get_ultimo_proveedor():
+    sql_query = """
+        SELECT MAX(CAST(SUBSTRING(Codigo FROM 5 FOR 4) AS INTEGER))
+        FROM proveedores;
+    """
+    result = sql(sql_query, fetch=True)
+
+    ultimo = result[0][0] if result and result[0][0] is not None else 0
+    return {"ultimo": ultimo}
 
 # ============================================================
 # LISTAR PROVEEDORES — PAGINADO

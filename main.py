@@ -15,6 +15,8 @@ from routers.clientes import router as clientes_router
 from routers.proveedores import router as proveedores_router
 from routers.servicios_md import router as servicios_md_router
 from routers.servicios_op import router as servicios_router
+from continentes_paises_puertos import router as cpp_router
+
 
 # ============================================================
 # CONFIGURACIÓN FASTAPI
@@ -92,6 +94,7 @@ app.include_router(clientes_router)
 app.include_router(proveedores_router)
 app.include_router(servicios_router)
 app.include_router(servicios_md_router)
+app.include_router(cpp_router)
 
 # ============================================================
 # EJECUCIÓN LOCAL

@@ -55,6 +55,21 @@ def add_cliente(data: dict):
 
 
 # ============================================================
+# OBTENER ÚLTIMO CÓDIGO CORRELATIVO  ✅ MOVER ARRIBA
+# ============================================================
+@router.get("/ultimo")
+def get_ultimo_cliente():
+    sql = """
+        SELECT MAX(CAST(SUBSTRING(codigo FROM 5 FOR 4) AS INTEGER))
+        FROM cliente;
+    """
+    result = database.sql(sql, fetch=True)
+    ultimo = result[0][0] if result and result[0][0] is not None else 0
+    return {"ultimo": ultimo}
+
+
+
+# ============================================================
 # LISTAR CLIENTES — PAGINADO
 # ============================================================
 @router.get("")
@@ -202,16 +217,3 @@ def delete_cliente(codigo: str):
     database.sql("DELETE FROM cliente WHERE codigo = %s", (codigo,))
     return {"status": "OK", "msg": "Cliente eliminado 🗑️"}
 
-
-# ============================================================
-# OBTENER ÚLTIMO CÓDIGO CORRELATIVO
-# ============================================================
-@router.get("/ultimo")
-def get_ultimo_cliente():
-    sql = """
-        SELECT MAX(CAST(SUBSTRING(codigo FROM 5 FOR 4) AS INTEGER))
-        FROM cliente;
-    """
-    result = database.sql(sql, fetch=True)
-    ultimo = result[0][0] if result and result[0][0] is not None else 0
-    return {"ultimo": ultimo}

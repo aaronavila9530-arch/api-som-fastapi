@@ -141,10 +141,15 @@ def get_servicio(consec: int):
     return {c: ("" if r[i] is None else str(r[i])) for i, c in enumerate(columnas)}
 
 
-@router.delete("/servicios/{consec}")
+@router.delete("/{consec}")
 def eliminar_servicio(consec: int):
-    sql = "DELETE FROM servicios WHERE consec = %s"
-    cursor.execute(sql, (consec,))
-    conn.commit()
-    return {"status": "ok", "msg": "Servicio eliminado"}
+    try:
+        sql = "DELETE FROM servicios WHERE consec = %s"
+        cursor.execute(sql, (consec,))
+        conn.commit()
+
+        return {"status": "ok", "msg": f"Servicio {consec} eliminado"}
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
 

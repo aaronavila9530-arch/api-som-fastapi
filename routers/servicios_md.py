@@ -1,7 +1,8 @@
 from fastapi import APIRouter
 import database
 
-router = APIRouter(prefix="/servicios", tags=["Servicios"])
+router = APIRouter(prefix="/servicios_md", tags=["ServiciosMD"])
+
 
 # ============================================================
 # INSERTAR NUEVO SERVICIO EN ServiciosMD

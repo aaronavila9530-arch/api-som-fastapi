@@ -21,3 +21,19 @@ def get_continentes_cpp():
     """, fetch=True)
 
     return [row[0] for row in rows]
+
+
+# ============================================================
+# GET → Lista de países según continente
+# ============================================================
+@router.get("/paises")
+def get_paises_cpp(continente: str):
+    rows = sql("""
+        SELECT DISTINCT pais
+        FROM continentes_paises_puertos
+        WHERE continente = %s
+          AND pais IS NOT NULL AND pais <> ''
+        ORDER BY pais;
+    """, (continente,), fetch=True)
+
+    return [row[0] for row in rows]

@@ -71,6 +71,20 @@ def add_surveyor(data: dict):
 
 
 # ============================================================
+# OBTENER ÚLTIMO CÓDIGO CORRELATIVO
+# ============================================================
+@router.get("/ultimo")
+def get_ultimo_surveyor():
+    sql = """
+        SELECT MAX(CAST(SUBSTRING(codigo FROM 5 FOR 4) AS INTEGER))
+        FROM surveyor;
+    """
+    result = database.sql(sql, fetch=True)
+    ultimo = result[0][0] if result and result[0][0] is not None else 0
+    return {"ultimo": ultimo}
+
+
+# ============================================================
 # LISTAR SURVEYORS — PAGINADO
 # ============================================================
 @router.get("/")

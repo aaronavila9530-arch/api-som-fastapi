@@ -13,7 +13,7 @@ from routers.empleados import router as empleados_router
 from routers.surveyores import router as surveyores_router
 from routers.clientes import router as clientes_router
 from routers.proveedores import router as proveedores_router
-from servicios_md import router as servicios_md_router
+from routers.servicios_md import router as servicios_md_router
 from routers.servicios_op import router as servicios_router
 
 # ============================================================
@@ -81,7 +81,7 @@ def get_puertos(pais: str):
         WHERE unaccent(pa.nombre) ILIKE unaccent(%s)
         ORDER BY pu.nombre;
     """, (pais,), fetch=True)
-    return [row[0] for row[0] in data]
+    return [row[0] for row in data]
 
 # ============================================================
 # INTEGRACIÓN DE ROUTERS (CRUD maestros)

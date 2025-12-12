@@ -299,42 +299,54 @@ def cerrar_operacion(consec: int, data: dict):
 @router.put("/generar_informe/{consec}")
 def generar_informe(consec: int):
     try:
-        row = database.sql("""
-            SELECT
-                COALESCE(
-                    MAX(
-                        CASE
-                            WHEN num_informe ~ '^[0-9]+-' THEN
-                                SPLIT_PART(num_informe, '-', 1)::int
-                            ELSE 0
-                        END
-                    ), 0
-                )
-            FROM servicios
-        """, fetch=True)
-
-        ultimo = row[0][0] or 0
-        nuevo = ultimo + 1
-
-        fecha_row = database.sql(
+        # 1) Obtener fecha_inicio (puede venir como date o como str)
+        row = database.sql(
             "SELECT fecha_inicio FROM servicios WHERE consec = %s",
             (consec,),
             fetch=True
         )
+        if not row or not row[0][0]:
+            raise HTTPException(status_code=400, detail="Servicio sin fecha_inicio.")
 
-        if not fecha_row or not fecha_row[0][0]:
-            raise HTTPException(400, "Servicio sin fecha de inicio")
+        fecha_inicio = row[0][0]
+        if isinstance(fecha_inicio, str):
+            # Si viene como "YYYY-MM-DD"
+            fecha_inicio_dt = datetime.strptime(fecha_inicio[:10], "%Y-%m-%d")
+        else:
+            # Si viene como date/datetime
+            fecha_inicio_dt = fecha_inicio
 
-        fecha = fecha_row[0][0]
-        num_informe = f"{nuevo}-{fecha.strftime('%d%m')}-{fecha.year}"
+        ddmm = fecha_inicio_dt.strftime("%d%m")
+        year = fecha_inicio_dt.strftime("%Y")
 
-        database.sql("""
+        # 2) Calcular consecutivo: max de la parte numérica antes del '-'
+        # Solo toma registros que cumplan ^\d+-
+        max_row = database.sql(
+            r"""
+            SELECT COALESCE(
+                MAX( (regexp_match(num_informe, '^(\d+)-'))[1]::int ),
+                0
+            )
+            FROM servicios
+            WHERE num_informe ~ '^\d+-'
+            """,
+            fetch=True
+        )
+        ultimo = int(max_row[0][0] or 0)
+        nuevo = ultimo + 1
+
+        num_informe = f"{nuevo}-{ddmm}-{year}"
+
+        # 3) Actualizar servicio: num_informe y estado finalizado
+        database.sql(
+            """
             UPDATE servicios
-            SET
-                num_informe = %s,
+            SET num_informe = %s,
                 estado = 'Finalizado'
             WHERE consec = %s
-        """, (num_informe, consec))
+            """,
+            (num_informe, consec)
+        )
 
         return {"status": "ok", "num_informe": num_informe}
 
@@ -342,7 +354,6 @@ def generar_informe(consec: int):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 @router.put("/fecha_fin/{consec}")

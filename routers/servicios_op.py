@@ -298,26 +298,67 @@ def cerrar_operacion(consec: int, data: dict):
 
 @router.put("/generar_informe/{consec}")
 def generar_informe(consec: int):
+    try:
+        row = database.sql("""
+            SELECT
+                COALESCE(
+                    MAX(
+                        CASE
+                            WHEN num_informe ~ '^[0-9]+-' THEN
+                                SPLIT_PART(num_informe, '-', 1)::int
+                            ELSE 0
+                        END
+                    ), 0
+                )
+            FROM servicios
+        """, fetch=True)
 
-    ultimo = database.sql(
-        "SELECT MAX(SPLIT_PART(num_informe,'-',1)::int) FROM servicios",
-        fetch=True
-    )[0][0] or 0
+        ultimo = row[0][0] or 0
+        nuevo = ultimo + 1
 
-    fecha = database.sql(
-        "SELECT fecha_inicio FROM servicios WHERE consec=%s",
-        (consec,), fetch=True
-    )[0][0]
+        fecha_row = database.sql(
+            "SELECT fecha_inicio FROM servicios WHERE consec = %s",
+            (consec,),
+            fetch=True
+        )
 
-    num = f"{ultimo+1}-{fecha.strftime('%d%m')}-{fecha.year}"
+        if not fecha_row or not fecha_row[0][0]:
+            raise HTTPException(400, "Servicio sin fecha de inicio")
 
-    database.sql("""
+        fecha = fecha_row[0][0]
+        num_informe = f"{nuevo}-{fecha.strftime('%d%m')}-{fecha.year}"
+
+        database.sql("""
+            UPDATE servicios
+            SET
+                num_informe = %s,
+                estado = 'Finalizado'
+            WHERE consec = %s
+        """, (num_informe, consec))
+
+        return {"status": "ok", "num_informe": num_informe}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
+@router.put("/fecha_fin/{consec}")
+def actualizar_fecha_fin(consec: int, data: dict):
+    database.sql(
+        """
         UPDATE servicios
-        SET num_informe=%s, estado='Finalizado'
-        WHERE consec=%s
-    """, (num, consec))
-
-    return {"status": "ok", "num_informe": num}
-
-
+        SET fecha_fin = %(fecha_fin)s,
+            hora_fin = %(hora_fin)s
+        WHERE consec = %(consec)s
+        """,
+        {
+            "fecha_fin": data["fecha_fin"],
+            "hora_fin": data["hora_fin"],
+            "consec": consec
+        }
+    )
+    return {"status": "ok"}
 

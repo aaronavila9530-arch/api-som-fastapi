@@ -243,3 +243,35 @@ def actualizar_demoras(consec: int, payload: DemoraUpdate):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============================================================
+# EDITAR SERVICIO (SIN CAMBIAR ESTADO)
+# ============================================================
+@router.put("/editar/{consec}")
+def editar_servicio(consec: int, data: dict):
+    try:
+        sql = """
+            UPDATE servicios SET
+                surveyor = %(surveyor)s,
+                honorarios = %(honorarios)s,
+                costo_operativo = %(costo_operativo)s,
+                fecha_inicio = %(fecha_inicio)s,
+                hora_inicio = %(hora_inicio)s
+            WHERE consec = %(consec)s
+        """
+
+        params = {
+            "surveyor": data.get("surveyor"),
+            "honorarios": data.get("honorarios"),
+            "costo_operativo": data.get("costo_operativo"),
+            "fecha_inicio": data.get("fecha_inicio"),
+            "hora_inicio": data.get("hora_inicio"),
+            "consec": consec
+        }
+
+        database.sql(sql, params)
+        return {"status": "ok", "msg": "Servicio actualizado"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+

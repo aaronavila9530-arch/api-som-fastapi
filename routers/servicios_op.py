@@ -221,11 +221,9 @@ def confirmar_servicio(consec: int, data: dict):
 
 
 @router.put("/demoras/{consec}")
-def actualizar_demoras(consec: int, data: dict):
-    total = data.get("total")
+def actualizar_demoras(consec: int, payload: DemoraUpdate):
 
-    if not total:
-        raise HTTPException(status_code=400, detail="Falta el campo 'total'.")
+    total = payload.total
 
     try:
         database.sql(
@@ -236,5 +234,4 @@ def actualizar_demoras(consec: int, data: dict):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 

@@ -4,6 +4,13 @@ import database
 
 router = APIRouter(prefix="/servicios", tags=["Servicios"])
 
+# ============================================
+# MODELO PARA DEMORAS
+# ============================================
+class DemoraUpdate(BaseModel):
+    total: str
+
+
 
 # ============================================================
 # MODELO DE INSERCIÓN DESDE POPUP
@@ -234,4 +241,5 @@ def actualizar_demoras(consec: int, payload: DemoraUpdate):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 

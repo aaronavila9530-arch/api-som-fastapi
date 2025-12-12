@@ -179,3 +179,19 @@ def cancelar_servicio(consec: int, data: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
+
+@router.put("/por_confirmar/{consec}")
+def marcar_por_confirmar(consec: int):
+    try:
+        sql = """
+            UPDATE servicios
+            SET estado = 'Por confirmar'
+            WHERE consec = %s
+        """
+        database.sql(sql, (consec,))
+        return {"status": "ok", "msg": f"Servicio {consec} marcado como 'Por confirmar'"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+

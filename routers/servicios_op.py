@@ -150,3 +150,32 @@ def eliminar_servicio(consec: int):
         return {"status": "ok", "msg": f"Servicio {consec} eliminado"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+
+
+
+@router.put("/cancelar/{consec}")
+def cancelar_servicio(consec: int, data: dict):
+    try:
+        sql = """
+            UPDATE servicios
+            SET estado = %(estado)s,
+                razon_cancelacion = %(razon_cancelacion)s,
+                comentario_cancelacion = %(comentario_cancelacion)s
+            WHERE consec = %(consec)s
+        """
+
+        params = {
+            "estado": data.get("estado", "Cancelado"),
+            "razon_cancelacion": data.get("razon_cancelacion", ""),
+            "comentario_cancelacion": data.get("comentario_cancelacion", ""),
+            "consec": consec
+        }
+
+        database.sql(sql, params)
+        return {"status": "ok", "msg": f"Servicio {consec} cancelado"}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+

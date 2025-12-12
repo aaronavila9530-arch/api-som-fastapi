@@ -275,3 +275,49 @@ def editar_servicio(consec: int, data: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+# ============================================================
+# Generar informe
+# ============================================================
+
+
+@router.put("/cerrar/{consec}")
+def cerrar_operacion(consec: int, data: dict):
+    database.sql("""
+        UPDATE servicios
+        SET fecha_fin=%(f)s, hora_fin=%(h)s
+        WHERE consec=%(c)s
+    """, {
+        "f": data["fecha_fin"],
+        "h": data["hora_fin"],
+        "c": consec
+    })
+    return {"status": "ok"}
+
+
+
+@router.put("/generar_informe/{consec}")
+def generar_informe(consec: int):
+
+    ultimo = database.sql(
+        "SELECT MAX(SPLIT_PART(num_informe,'-',1)::int) FROM servicios",
+        fetch=True
+    )[0][0] or 0
+
+    fecha = database.sql(
+        "SELECT fecha_inicio FROM servicios WHERE consec=%s",
+        (consec,), fetch=True
+    )[0][0]
+
+    num = f"{ultimo+1}-{fecha.strftime('%d%m')}-{fecha.year}"
+
+    database.sql("""
+        UPDATE servicios
+        SET num_informe=%s, estado='Finalizado'
+        WHERE consec=%s
+    """, (num, consec))
+
+    return {"status": "ok", "num_informe": num}
+
+
+

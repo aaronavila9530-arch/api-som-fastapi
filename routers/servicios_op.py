@@ -195,3 +195,25 @@ def marcar_por_confirmar(consec: int):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@router.put("/confirmar/{consec}")
+def confirmar_servicio(consec: int, data: dict):
+    try:
+        sql = """
+            UPDATE servicios
+            SET fecha_inicio = %(fecha_inicio)s,
+                hora_inicio = %(hora_inicio)s,
+                estado = 'Confirmado'
+            WHERE consec = %(consec)s
+        """
+        params = {
+            "fecha_inicio": data.get("fecha_inicio"),
+            "hora_inicio": data.get("hora_inicio"),
+            "consec": consec
+        }
+
+        database.sql(sql, params)
+        return {"status": "ok", "msg": f"Servicio {consec} confirmado"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+

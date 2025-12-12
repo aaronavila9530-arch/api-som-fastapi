@@ -277,31 +277,54 @@ def editar_servicio(consec: int, data: dict):
 
 
 # ============================================================
-# Generar informe
+# CERRAR OPERACIÓN (FECHA Y HORA DE FINALIZACIÓN)
 # ============================================================
-
-
 @router.put("/cerrar/{consec}")
 def cerrar_operacion(consec: int, data: dict):
-    database.sql("""
-        UPDATE servicios
-        SET fecha_fin=%(f)s, hora_fin=%(h)s
-        WHERE consec=%(c)s
-    """, {
-        "f": data["fecha_fin"],
-        "h": data["hora_fin"],
-        "c": consec
-    })
-    return {"status": "ok"}
+
+    fecha_fin = data.get("fecha_fin")
+    hora_fin = data.get("hora_fin")
+
+    if not fecha_fin or not hora_fin:
+        raise HTTPException(
+            status_code=400,
+            detail="Fecha y hora de finalización requeridas"
+        )
+
+    try:
+        database.sql(
+            """
+            UPDATE servicios
+            SET fecha_fin = %(f)s,
+                hora_fin  = %(h)s
+            WHERE consec = %(c)s
+            """,
+            {
+                "f": fecha_fin,
+                "h": hora_fin,
+                "c": consec
+            }
+        )
+
+        return {
+            "status": "ok",
+            "fecha_fin": fecha_fin,
+            "hora_fin": hora_fin
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-
+# ============================================================
+# GENERAR INFORME (NUM_INFORME + FINALIZAR)
+# ============================================================
 @router.put("/generar_informe/{consec}")
 def generar_informe(consec: int):
     try:
-        # =====================================
+        # --------------------------------------------------
         # 1. Obtener fecha de inicio
-        # =====================================
+        # --------------------------------------------------
         row = database.sql(
             "SELECT fecha_inicio FROM servicios WHERE consec = %s",
             (consec,),
@@ -324,10 +347,10 @@ def generar_informe(consec: int):
         ddmm = fecha_dt.strftime("%d%m")
         year = fecha_dt.strftime("%Y")
 
-        # =====================================
+        # --------------------------------------------------
         # 2. Obtener último consecutivo
-        #    BASE = 2128 si no hay registros
-        # =====================================
+        #    BASE = 2128 si no hay informes aún
+        # --------------------------------------------------
         max_row = database.sql(
             """
             SELECT COALESCE(
@@ -348,9 +371,9 @@ def generar_informe(consec: int):
 
         num_informe = f"{nuevo}-{ddmm}-{year}"
 
-        # =====================================
+        # --------------------------------------------------
         # 3. Actualizar servicio
-        # =====================================
+        # --------------------------------------------------
         database.sql(
             """
             UPDATE servicios

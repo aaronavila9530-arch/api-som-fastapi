@@ -217,3 +217,24 @@ def confirmar_servicio(consec: int, data: dict):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
+
+@router.put("/demoras/{consec}")
+def actualizar_demoras(consec: int, data: dict):
+    total = data.get("total")
+
+    if not total:
+        raise HTTPException(status_code=400, detail="Falta el campo 'total'.")
+
+    try:
+        database.sql(
+            "UPDATE servicios SET demoras = %s WHERE consec = %s",
+            (total, consec)
+        )
+        return {"status": "ok", "msg": "Demoras actualizadas", "total": total}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+

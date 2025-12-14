@@ -1,19 +1,26 @@
 # database.py
 import psycopg2
 
+# =====================================================
+# DATABASE URL (Railway)
+# =====================================================
+DATABASE_URL = "postgresql://postgres:LjjyuIUsTSCdiwPVHSSwtIYPOsRQytGX@shortline.proxy.rlwy.net:50018/railway"
+
 
 # =====================================================
-# ⚠️ PEGA AQUÍ TU URL DE RAILWAY
-# Ejemplo de formato:
-# postgresql://usuario:clave@host:puerto/railway
+# CONEXIÓN DIRECTA (uso puntual)
 # =====================================================
-DATABASE_URL = "postgresql://postgres:LjjyuIUsTSCdiwPVHSSwtIYPOsRQytGX@shortline.proxy.rlwy.net:50018/railway"  # 👈 REEMPLAZA ESTO
-
-
 def connect():
     return psycopg2.connect(DATABASE_URL)
 
 
+def get_conn():
+    return psycopg2.connect(DATABASE_URL)
+
+
+# =====================================================
+# FUNCIÓN SQL GENÉRICA (legacy / utilitaria)
+# =====================================================
 def sql(query, params=None, fetch=False):
     conn = connect()
     cur = conn.cursor()
@@ -37,5 +44,16 @@ def sql(query, params=None, fetch=False):
         conn.close()
 
 
-def get_conn():
-    return psycopg2.connect(DATABASE_URL)
+# =====================================================
+# ✅ FASTAPI DEPENDENCY (ESTO FALTABA)
+# =====================================================
+def get_db():
+    """
+    Dependency para FastAPI.
+    Provee una conexión y la cierra automáticamente.
+    """
+    conn = psycopg2.connect(DATABASE_URL)
+    try:
+        yield conn
+    finally:
+        conn.close()

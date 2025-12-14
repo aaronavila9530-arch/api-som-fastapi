@@ -35,3 +35,7 @@ def sql(query, params=None, fetch=False):
     finally:
         cur.close()
         conn.close()
+
+
+def get_conn():
+    return psycopg2.connect(DATABASE_URL)

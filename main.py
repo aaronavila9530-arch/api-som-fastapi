@@ -16,7 +16,10 @@ from routers.proveedores import router as proveedores_router
 from routers.servicios_md import router as servicios_md_router
 from routers.servicios_op import router as servicios_router
 from routers.continentes_paises_puertos import router as cpp_router
-
+from routers.version import router as version_router
+from routers.cliente_credito import router as cliente_credito_router
+from routers.servicios_facturables import router as servicios_facturables_router
+from routers.factura import router as factura_router
 
 
 # ============================================================
@@ -96,6 +99,10 @@ app.include_router(proveedores_router)
 app.include_router(servicios_router)
 app.include_router(servicios_md_router)
 app.include_router(cpp_router)
+app.include_router(version_router, tags=["Version"])
+app.include_router(cliente_credito_router)
+app.include_router(servicios_facturables_router)
+app.include_router(factura_router)
 
 # ============================================================
 # EJECUCIÓN LOCAL

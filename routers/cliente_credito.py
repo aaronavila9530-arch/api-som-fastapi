@@ -158,3 +158,19 @@ def update_credito_cliente(codigo_cliente: str, payload: dict, conn=Depends(get_
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+
+@router.delete("/{codigo_cliente}")
+def delete_credito_cliente(codigo_cliente: str, conn=Depends(get_db)):
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM cliente_credito WHERE codigo_cliente = %s",
+        (codigo_cliente,)
+    )
+
+    if cur.rowcount == 0:
+        raise HTTPException(status_code=404, detail="No existe configuración")
+
+    conn.commit()
+    cur.close()
+    return {"message": "Configuración crediticia eliminada"}
+

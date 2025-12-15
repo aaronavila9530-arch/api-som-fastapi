@@ -1,10 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from psycopg2.extras import RealDictCursor
 import os
-from fastapi import UploadFile, File, Form
+import uuid
+
 from services.xml.factura_electronica_parser import parse_factura_electronica
-
-
 from database import get_db
 
 router = APIRouter(
@@ -18,9 +17,7 @@ router = APIRouter(
 @router.post("/manual")
 def crear_factura_manual(payload: dict, conn=Depends(get_db)):
 
-    # ====================================================
-    # IMPORT DIFERIDO (NO CRASHEA LA API AL ARRANCAR)
-    # ====================================================
+    # Import diferido (evita crash al arrancar)
     try:
         from services.pdf.factura_manual_pdf import generar_factura_manual_pdf
     except ImportError:
@@ -29,11 +26,20 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
             detail="El módulo de generación de PDF no está disponible."
         )
 
+    cur = None
+    cur_dict = None
+
     try:
+        # Validación mínima
+        if not payload.get("servicios"):
+            raise HTTPException(
+                status_code=400,
+                detail="La factura debe contener al menos un servicio."
+            )
+
         cur = conn.cursor()
-        # ====================================================
-        # 1. Crear factura (cabecera)
-        # ====================================================
+
+        # ================= Crear factura =================
         cur.execute("""
             INSERT INTO factura (
                 tipo_factura,
@@ -49,8 +55,8 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
             )
             RETURNING id
         """, (
-            payload["codigo_cliente"],
-            payload["fecha_emision"],
+            payload.get("codigo_cliente"),
+            payload.get("fecha_emision"),
             payload.get("termino_pago"),
             payload.get("moneda", "USD"),
             payload.get("total", 0)
@@ -58,11 +64,11 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
 
         factura_id = cur.fetchone()[0]
 
-        # ====================================================
-        # 2. Insertar líneas de factura
-        # ====================================================
-        for linea in payload.get("servicios", []):
-            total_linea = linea["cantidad"] * linea["precio_unitario"]
+        # ================= Detalles =================
+        for linea in payload["servicios"]:
+            cantidad = float(linea.get("cantidad", 0))
+            precio = float(linea.get("precio_unitario", 0))
+            total_linea = cantidad * precio
 
             cur.execute("""
                 INSERT INTO factura_detalle (
@@ -75,15 +81,13 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
                 VALUES (%s, %s, %s, %s, %s)
             """, (
                 factura_id,
-                linea["descripcion"],
-                linea["cantidad"],
-                linea["precio_unitario"],
+                linea.get("descripcion"),
+                cantidad,
+                precio,
                 total_linea
             ))
 
-            # ====================================================
-            # 3. Vincular servicio con factura
-            # ====================================================
+            # Vincular servicio
             cur.execute("""
                 INSERT INTO factura_servicio (
                     factura_id,
@@ -93,13 +97,11 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
                 VALUES (%s, %s, %s)
             """, (
                 factura_id,
-                linea["servicio_id"],
+                linea.get("servicio_id"),
                 linea.get("num_informe")
             ))
 
-        # ====================================================
-        # 🔽 NUEVO: Generar PDF y guardar ruta
-        # ====================================================
+        # ================= Generar PDF =================
         cur_dict = conn.cursor(cursor_factory=RealDictCursor)
 
         cur_dict.execute(
@@ -121,13 +123,7 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
             (pdf_path, factura_id)
         )
 
-        # ====================================================
-        # Commit final
-        # ====================================================
         conn.commit()
-
-        cur.close()
-        cur_dict.close()
 
         return {
             "message": "Factura manual creada correctamente",
@@ -135,9 +131,17 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
             "pdf_path": pdf_path
         }
 
+    except HTTPException:
+        conn.rollback()
+        raise
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cur:
+            cur.close()
+        if cur_dict:
+            cur_dict.close()
 
 
 # ============================================================
@@ -151,12 +155,15 @@ def cargar_factura_electronica(
     xml: UploadFile = File(...),
     conn=Depends(get_db)
 ):
+    cur = None
+
     try:
         # ================= Guardar XML =================
-        xml_dir = "backend_api/storage/xml"
+        xml_dir = os.path.join("backend_api", "storage", "xml")
         os.makedirs(xml_dir, exist_ok=True)
 
-        xml_path = os.path.join(xml_dir, xml.filename)
+        unique_name = f"{uuid.uuid4()}_{xml.filename}"
+        xml_path = os.path.join(xml_dir, unique_name)
 
         with open(xml_path, "wb") as f:
             f.write(xml.file.read())
@@ -186,19 +193,19 @@ def cargar_factura_electronica(
             RETURNING id
         """, (
             codigo_cliente,
-            data["numero_factura"],
-            data["clave_electronica"],
-            data["fecha_emision"],
-            data["termino_pago"],
-            data["moneda"],
-            data["total"],
+            data.get("numero_factura"),
+            data.get("clave_electronica"),
+            data.get("fecha_emision"),
+            data.get("termino_pago"),
+            data.get("moneda"),
+            data.get("total"),
             xml_path
         ))
 
         factura_id = cur.fetchone()[0]
 
         # ================= Detalles =================
-        for d in data["detalles"]:
+        for d in data.get("detalles", []):
             cur.execute("""
                 INSERT INTO factura_detalle (
                     factura_id,
@@ -211,11 +218,11 @@ def cargar_factura_electronica(
                 VALUES (%s, %s, %s, %s, %s, %s)
             """, (
                 factura_id,
-                d["descripcion"],
-                d["cantidad"],
-                d["precio_unitario"],
-                d["impuesto"],
-                d["total_linea"]
+                d.get("descripcion"),
+                d.get("cantidad"),
+                d.get("precio_unitario"),
+                d.get("impuesto"),
+                d.get("total_linea")
             ))
 
         # ================= Vincular servicio =================
@@ -233,16 +240,21 @@ def cargar_factura_electronica(
         ))
 
         conn.commit()
-        cur.close()
 
         return {
             "message": "Factura electrónica cargada correctamente",
             "factura_id": factura_id
         }
 
+    except HTTPException:
+        conn.rollback()
+        raise
     except Exception as e:
         conn.rollback()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cur:
+            cur.close()
 
 
 # ============================================================
@@ -250,6 +262,7 @@ def cargar_factura_electronica(
 # ============================================================
 @router.get("/{factura_id}")
 def get_factura(factura_id: int, conn=Depends(get_db)):
+    cur = None
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -266,8 +279,6 @@ def get_factura(factura_id: int, conn=Depends(get_db)):
         """, (factura_id,))
         detalles = cur.fetchall()
 
-        cur.close()
-
         return {
             "factura": factura,
             "detalles": detalles
@@ -277,3 +288,6 @@ def get_factura(factura_id: int, conn=Depends(get_db)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cur:
+            cur.close()

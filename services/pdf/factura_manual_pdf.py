@@ -5,17 +5,22 @@ from datetime import datetime
 import os
 
 
-BASE_PATH = "backend_api/storage/facturas"
+# ============================================================
+# Ruta base donde se almacenan las facturas
+# ============================================================
+BASE_PATH = os.path.join("backend_api", "storage", "facturas")
 
 
-def generar_factura_manual_pdf(factura, detalles):
+def generar_factura_manual_pdf(factura: dict, detalles: list) -> str:
     """
-    factura: dict (tabla factura)
-    detalles: list (tabla factura_detalle)
+    Genera un PDF de factura manual.
+
+    factura: dict (registro de la tabla factura)
+    detalles: list[dict] (registros de factura_detalle)
     """
 
-    if not os.path.exists(BASE_PATH):
-        os.makedirs(BASE_PATH)
+    # Asegurar directorio
+    os.makedirs(BASE_PATH, exist_ok=True)
 
     filename = f"FACTURA_{factura['id']}.pdf"
     filepath = os.path.join(BASE_PATH, filename)
@@ -40,19 +45,28 @@ def generar_factura_manual_pdf(factura, detalles):
     c.setFont("Helvetica-Bold", 10)
     c.drawString(1 * inch, y, f"INVOICE Nº {factura['id']}")
 
+    # Fecha formateada
+    fecha = factura.get("fecha_emision")
+    if isinstance(fecha, datetime):
+        fecha = fecha.strftime("%Y-%m-%d")
+
     y -= 14
     c.setFont("Helvetica", 9)
-    c.drawString(1 * inch, y, f"Date: {factura['fecha_emision']}")
+    c.drawString(1 * inch, y, f"Date: {fecha}")
     y -= 12
-    c.drawString(1 * inch, y, f"Client: {factura['codigo_cliente']}")
+    c.drawString(1 * inch, y, f"Client: {factura.get('codigo_cliente', '')}")
     y -= 12
-    c.drawString(1 * inch, y, f"Terms of payment: {factura.get('termino_pago', '')}")
+    c.drawString(
+        1 * inch,
+        y,
+        f"Terms of payment: {factura.get('termino_pago', '')}"
+    )
 
     # ================= TABLE HEADER =================
     y -= 30
     c.setFont("Helvetica-Bold", 9)
     c.drawString(1 * inch, y, "DESCRIPTION")
-    c.drawString(5.5 * inch, y, "TOTAL")
+    c.drawRightString(7.5 * inch, y, "TOTAL")
 
     c.line(1 * inch, y - 2, 7.5 * inch, y - 2)
 
@@ -60,17 +74,27 @@ def generar_factura_manual_pdf(factura, detalles):
     y -= 15
     c.setFont("Helvetica", 9)
 
-    total = 0
+    total = 0.0
 
     for d in detalles:
-        c.drawString(1 * inch, y, d["descripcion"])
+        descripcion = d.get("descripcion", "")
+        total_linea = float(d.get("total_linea", 0))
+
+        c.drawString(1 * inch, y, descripcion)
         c.drawRightString(
             7.5 * inch,
             y,
-            f"$ {d['total_linea']:,.2f}"
+            f"$ {total_linea:,.2f}"
         )
-        total += d["total_linea"]
+
+        total += total_linea
         y -= 14
+
+        # Salto de página si se acaba el espacio
+        if y < 1.5 * inch:
+            c.showPage()
+            c.setFont("Helvetica", 9)
+            y = height - 1 * inch
 
     # ================= TOTAL =================
     y -= 20

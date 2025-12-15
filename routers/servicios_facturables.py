@@ -10,6 +10,7 @@ router = APIRouter(
 )
 
 # ============================================================
+# ⚠️ ESTA RUTA DEBE IR PRIMERO
 # GET /servicios/facturables
 # ============================================================
 @router.get("/facturables")
@@ -17,14 +18,6 @@ def get_servicios_facturables(
     cliente: Optional[str] = Query(None),
     conn=Depends(get_db)
 ):
-    """
-    Retorna servicios:
-    - FINALIZADOS
-    - con num_informe
-    - NO facturados
-    - opcionalmente filtrados por cliente
-    """
-
     cur = None
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -52,7 +45,6 @@ def get_servicios_facturables(
 
         params = []
 
-        # 🔹 FILTRO POR CLIENTE SOLO SI SE ENVÍA
         if cliente:
             sql += " AND s.cliente = %s"
             params.append(cliente)
@@ -70,9 +62,32 @@ def get_servicios_facturables(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error al obtener servicios facturables: {str(e)}"
+            detail=str(e)
         )
 
     finally:
         if cur:
             cur.close()
+
+
+# ============================================================
+# ⚠️ ESTA RUTA SIEMPRE AL FINAL
+# GET /servicios/{servicio_id}
+# ============================================================
+@router.get("/{servicio_id}")
+def get_servicio(
+    servicio_id: int,
+    conn=Depends(get_db)
+):
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(
+        "SELECT * FROM servicios WHERE id = %s",
+        (servicio_id,)
+    )
+    data = cur.fetchone()
+    cur.close()
+
+    if not data:
+        raise HTTPException(status_code=404, detail="Servicio no encontrado")
+
+    return data

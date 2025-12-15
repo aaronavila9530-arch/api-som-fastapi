@@ -20,6 +20,7 @@ from routers.version import router as version_router
 from routers.cliente_credito import router as cliente_credito_router
 from routers.servicios_facturables import router as servicios_facturables_router
 from routers.factura import router as factura_router
+from routers import invoicing
 
 
 # ============================================================
@@ -101,8 +102,8 @@ app.include_router(servicios_md_router)
 app.include_router(cpp_router)
 app.include_router(version_router, tags=["Version"])
 app.include_router(cliente_credito_router)
-app.include_router(servicios_facturables_router)
 app.include_router(factura_router)
+app.include_router(invoicing.router)
 
 # ============================================================
 # EJECUCIÓN LOCAL

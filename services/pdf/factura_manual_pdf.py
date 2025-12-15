@@ -1,123 +1,160 @@
-from reportlab.lib.pagesizes import LETTER
-from reportlab.pdfgen import canvas
-from reportlab.lib.units import inch
-from datetime import datetime
 import os
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfgen import canvas
+from reportlab.lib.colors import HexColor, black
+from reportlab.lib.units import cm
+from datetime import datetime
 
 
 # ============================================================
-# Ruta base donde se almacenan las facturas
+# CONFIGURACIÓN GENERAL
 # ============================================================
-BASE_PATH = os.path.join("backend_api", "storage", "facturas")
+BASE_DIR = os.path.join("backend_api", "storage", "pdf")
+os.makedirs(BASE_DIR, exist_ok=True)
+
+COLOR_PRINCIPAL = HexColor("#1F4E79")   # Azul corporativo
+COLOR_GRIS = HexColor("#F2F2F2")
 
 
-def generar_factura_manual_pdf(factura: dict, detalles: list) -> str:
+# ============================================================
+# FUNCIÓN PRINCIPAL
+# ============================================================
+def generar_factura_manual_pdf(data: dict) -> str:
     """
-    Genera un PDF de factura manual.
-
-    factura: dict (registro de la tabla factura)
-    detalles: list[dict] (registros de factura_detalle)
+    data = {
+        numero_factura,
+        fecha_factura,
+        cliente,
+        buque,
+        operacion,
+        num_informe,
+        periodo,
+        descripcion,
+        moneda,
+        termino_pago,
+        total
+    }
     """
 
-    # Asegurar directorio
-    os.makedirs(BASE_PATH, exist_ok=True)
+    nombre_pdf = f"Factura_{data['numero_factura']}.pdf"
+    ruta_pdf = os.path.join(BASE_DIR, nombre_pdf)
 
-    filename = f"FACTURA_{factura['id']}.pdf"
-    filepath = os.path.join(BASE_PATH, filename)
+    c = canvas.Canvas(ruta_pdf, pagesize=A4)
+    width, height = A4
 
-    c = canvas.Canvas(filepath, pagesize=LETTER)
-    width, height = LETTER
+    # ========================================================
+    # ENCABEZADO – EMISOR (1)
+    # ========================================================
+    c.setFillColor(COLOR_PRINCIPAL)
+    c.rect(1.5 * cm, height - 3.5 * cm, width - 3 * cm, 2.5 * cm, fill=0)
 
-    y = height - 1 * inch
-
-    # ================= HEADER =================
-    c.setFont("Helvetica-Bold", 12)
-    c.drawString(1 * inch, y, "MARINE SURVEYORS AND LOGISTICS S.A.")
-    y -= 14
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(2 * cm, height - 2.2 * cm, "MSL MARINE SURVEYORS & LOGISTICS GROUP SRL")
 
     c.setFont("Helvetica", 9)
-    c.drawString(1 * inch, y, "San José, Costa Rica")
-    y -= 12
-    c.drawString(1 * inch, y, "Tel: +506 8814-0784")
+    c.drawString(2 * cm, height - 2.9 * cm, "Cédula Jurídica: 3-102-XXXXXX")
+    c.drawString(2 * cm, height - 3.4 * cm, "Correo: info@mslmarine.com | Tel: +506 XXXX-XXXX")
 
-    # ================= FACTURA INFO =================
-    y -= 30
+    # ========================================================
+    # CLIENTE + FACTURA (2)
+    # ========================================================
+    y = height - 5 * cm
+
+    c.setFillColor(COLOR_GRIS)
+    c.rect(1.5 * cm, y, width - 3 * cm, 2.8 * cm, fill=1)
+    c.setFillColor(black)
+
     c.setFont("Helvetica-Bold", 10)
-    c.drawString(1 * inch, y, f"INVOICE Nº {factura['id']}")
+    c.drawString(2 * cm, y + 2.1 * cm, f"FACTURA N° {data['numero_factura']}")
+    c.drawString(2 * cm, y + 1.5 * cm, f"Cliente: {data['cliente']}")
 
-    # Fecha formateada
-    fecha = factura.get("fecha_emision")
+    fecha = data["fecha_factura"]
     if isinstance(fecha, datetime):
-        fecha = fecha.strftime("%Y-%m-%d")
+        fecha = fecha.strftime("%d/%m/%Y")
 
-    y -= 14
     c.setFont("Helvetica", 9)
-    c.drawString(1 * inch, y, f"Date: {fecha}")
-    y -= 12
-    c.drawString(1 * inch, y, f"Client: {factura.get('codigo_cliente', '')}")
-    y -= 12
-    c.drawString(
-        1 * inch,
-        y,
-        f"Terms of payment: {factura.get('termino_pago', '')}"
-    )
+    c.drawString(2 * cm, y + 0.9 * cm, f"Fecha factura: {fecha}")
+    c.drawString(2 * cm, y + 0.3 * cm, f"N° Informe: {data['num_informe']}")
 
-    # ================= TABLE HEADER =================
-    y -= 30
-    c.setFont("Helvetica-Bold", 9)
-    c.drawString(1 * inch, y, "DESCRIPTION")
-    c.drawRightString(7.5 * inch, y, "TOTAL")
+    # ========================================================
+    # TÉRMINOS DE PAGO (3)
+    # ========================================================
+    y -= 2.2 * cm
 
-    c.line(1 * inch, y - 2, 7.5 * inch, y - 2)
+    c.setFillColor(COLOR_GRIS)
+    c.rect(1.5 * cm, y, width - 3 * cm, 1.5 * cm, fill=1)
+    c.setFillColor(black)
 
-    # ================= DETAIL =================
-    y -= 15
-    c.setFont("Helvetica", 9)
-
-    total = 0.0
-
-    for d in detalles:
-        descripcion = d.get("descripcion", "")
-        total_linea = float(d.get("total_linea", 0))
-
-        c.drawString(1 * inch, y, descripcion)
-        c.drawRightString(
-            7.5 * inch,
-            y,
-            f"$ {total_linea:,.2f}"
-        )
-
-        total += total_linea
-        y -= 14
-
-        # Salto de página si se acaba el espacio
-        if y < 1.5 * inch:
-            c.showPage()
-            c.setFont("Helvetica", 9)
-            y = height - 1 * inch
-
-    # ================= TOTAL =================
-    y -= 20
     c.setFont("Helvetica-Bold", 10)
-    c.drawRightString(7.5 * inch, y, f"TOTAL $ {total:,.2f}")
+    c.drawString(2 * cm, y + 0.9 * cm, "Términos de pago")
 
-    # ================= FOOTER =================
-    y -= 40
-    c.setFont("Helvetica", 8)
+    c.setFont("Helvetica", 9)
     c.drawString(
-        1 * inch,
-        y,
-        "Payments to be drawn on C.R. bank free of all charges / in U.S. dollars"
+        2 * cm,
+        y + 0.3 * cm,
+        f"{data['termino_pago']} días | Moneda: {data['moneda']}"
     )
 
-    y -= 12
-    c.drawString(
-        1 * inch,
-        y,
-        "IBAN: CR49015201308000025850 - BCR Banco de Costa Rica"
+    # ========================================================
+    # DESCRIPCIÓN (4)
+    # ========================================================
+    y -= 4.2 * cm
+
+    c.setFillColor(COLOR_GRIS)
+    c.rect(1.5 * cm, y, width - 3 * cm, 4 * cm, fill=1)
+    c.setFillColor(black)
+
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(2 * cm, y + 3.2 * cm, "Descripción del servicio")
+
+    c.setFont("Helvetica", 9)
+    text = c.beginText(2 * cm, y + 2.6 * cm)
+    text.textLine(f"Buque / Contenedor: {data['buque']}")
+    text.textLine(f"Operación: {data['operacion']}")
+    text.textLine(f"Periodo de operación: {data['periodo']}")
+    text.textLine("")
+    text.textLine(data["descripcion"])
+    c.drawText(text)
+
+    # ========================================================
+    # TOTAL (5)
+    # ========================================================
+    y -= 2.2 * cm
+
+    c.setFillColor(COLOR_PRINCIPAL)
+    c.rect(1.5 * cm, y, width - 3 * cm, 1.5 * cm, fill=0)
+
+    c.setFont("Helvetica-Bold", 12)
+    c.drawRightString(
+        width - 2 * cm,
+        y + 0.5 * cm,
+        f"TOTAL {data['moneda']} {float(data['total']):,.2f}"
+    )
+
+    # ========================================================
+    # DATOS BANCARIOS (6)
+    # ========================================================
+    y -= 3.2 * cm
+
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(2 * cm, y + 1.8 * cm, "Datos bancarios")
+
+    c.setFont("Helvetica", 9)
+    c.drawString(2 * cm, y + 1.2 * cm, "Banco: Banco Nacional de Costa Rica")
+    c.drawString(2 * cm, y + 0.6 * cm, "IBAN: CR49015201308000025850")
+    c.drawString(2 * cm, y, "SWIFT: BNCRCRSJ")
+
+    # ========================================================
+    # FOOTER
+    # ========================================================
+    c.setFont("Helvetica-Oblique", 8)
+    c.drawCentredString(
+        width / 2,
+        1.2 * cm,
+        "Este documento corresponde a una factura manual generada por ERP-SOM"
     )
 
     c.showPage()
     c.save()
 
-    return filepath
+    return ruta_pdf

@@ -1,5 +1,3 @@
-# backend_api/services/servicios_facturacion.py
-
 def get_servicios_facturables_por_cliente(cur, cliente: str):
     sql = """
         SELECT
@@ -27,11 +25,14 @@ def get_servicios_facturables_por_cliente(cur, cliente: str):
             factura
         FROM servicios
         WHERE
-            cliente = %s
-            AND estado = 'Finalizado'
+            LOWER(TRIM(cliente)) = LOWER(%s)
+            AND UPPER(TRIM(estado)) = 'FINALIZADO'
             AND num_informe IS NOT NULL
             AND TRIM(num_informe) <> ''
-            AND COALESCE(TRIM(factura), '') = ''
+            AND (
+                factura IS NULL
+                OR TRIM(factura) = ''
+            )
         ORDER BY fecha_inicio NULLS LAST
     """
     cur.execute(sql, (cliente,))

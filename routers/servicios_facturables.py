@@ -10,43 +10,49 @@ router = APIRouter(
 )
 
 # ============================================================
-# GET /servicios/facturacion/facturables
+# GET /servicios/facturables
 # ============================================================
-@router.get("/facturacion/facturables")
+@router.get("/facturables")
 def get_servicios_facturables(
     cliente: Optional[str] = Query(None),
     conn=Depends(get_db)
 ):
-    """
-    Retorna servicios que:
-    - están FINALIZADOS
-    - tienen num_informe
-    - NO han sido facturados
-    - opcionalmente filtrados por cliente (NOMBRE)
-    """
+    if not conn:
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo obtener conexión a la base de datos"
+        )
+
     cur = None
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
         sql = """
             SELECT
-                s.id,
-                s.codigo,
-                s.cliente,
-                s.descripcion,
+                s.consec,
+                s.tipo,
                 s.estado,
                 s.num_informe,
-                s.fecha,
-                s.monto
+                s.buque_contenedor,
+                s.cliente,
+                s.detalle,
+                s.continente,
+                s.pais,
+                s.puerto,
+                s.operacion,
+                s.fecha_inicio,
+                s.hora_inicio,
+                s.fecha_fin,
+                s.hora_fin,
+                s.demoras,
+                s.duracion,
+                s.honorarios,
+                s.factura
             FROM servicios s
             WHERE
                 s.estado = 'FINALIZADO'
                 AND s.num_informe IS NOT NULL
-                AND NOT EXISTS (
-                    SELECT 1
-                    FROM factura_servicio fs
-                    WHERE fs.servicio_id = s.id
-                )
+                AND s.factura IS NULL
         """
 
         params = []
@@ -55,7 +61,7 @@ def get_servicios_facturables(
             sql += " AND s.cliente = %s"
             params.append(cliente)
 
-        sql += " ORDER BY s.fecha ASC"
+        sql += " ORDER BY s.fecha_inicio NULLS LAST"
 
         cur.execute(sql, params)
         data = cur.fetchall()
@@ -68,32 +74,9 @@ def get_servicios_facturables(
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=str(e)
+            detail=f"Error SQL servicios_facturables: {str(e)}"
         )
 
     finally:
         if cur:
             cur.close()
-
-
-# ============================================================
-# GET /servicios/{servicio_id}
-# (ruta dinámica, ya NO colisiona)
-# ============================================================
-@router.get("/{servicio_id}")
-def get_servicio(
-    servicio_id: int,
-    conn=Depends(get_db)
-):
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute(
-        "SELECT * FROM servicios WHERE id = %s",
-        (servicio_id,)
-    )
-    data = cur.fetchone()
-    cur.close()
-
-    if not data:
-        raise HTTPException(status_code=404, detail="Servicio no encontrado")
-
-    return data

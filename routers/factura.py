@@ -73,13 +73,37 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
             )
 
         # ====================================================
+        # RESOLVER CÓDIGO DE CLIENTE DESDE NOMBRE
+        # ====================================================
+        cur.execute("""
+            SELECT codigo
+            FROM cliente
+            WHERE
+                nombrecomercial = %s
+                OR nombrejuridico = %s
+        """, (
+            servicio["cliente"],
+            servicio["cliente"]
+        ))
+
+        cliente_row = cur.fetchone()
+
+        if not cliente_row:
+            raise HTTPException(
+                status_code=400,
+                detail="No se pudo resolver el código del cliente"
+            )
+
+        codigo_cliente = cliente_row["codigo"]
+
+        # ====================================================
         # OBTENER TÉRMINO DE PAGO DESDE CLIENTE_CRÉDITO
         # ====================================================
         cur.execute("""
             SELECT termino_pago
             FROM cliente_credito
             WHERE codigo_cliente = %s
-        """, (servicio["cliente"],))
+        """, (codigo_cliente,))
 
         credito = cur.fetchone()
 
@@ -117,7 +141,7 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
             RETURNING id
         """, (
             numero_factura,
-            servicio["cliente"],
+            codigo_cliente,
             fecha_factura,
             termino_pago,
             payload.get("moneda", "USD"),
@@ -151,7 +175,7 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
         pdf_data = {
             "numero_factura": numero_factura,
             "fecha_factura": fecha_factura,
-            "cliente": servicio["cliente"],
+            "cliente": servicio["cliente"],  # nombre (UI/visual)
             "buque": servicio["buque_contenedor"],
             "operacion": servicio["operacion"],
             "num_informe": servicio["num_informe"],

@@ -10,14 +10,20 @@ router = APIRouter(
 )
 
 # ============================================================
-# ⚠️ ESTA RUTA DEBE IR PRIMERO
-# GET /servicios/facturables
+# GET /servicios/facturacion/facturables
 # ============================================================
-@router.get("/facturables")
+@router.get("/facturacion/facturables")
 def get_servicios_facturables(
     cliente: Optional[str] = Query(None),
     conn=Depends(get_db)
 ):
+    """
+    Retorna servicios que:
+    - están FINALIZADOS
+    - tienen num_informe
+    - NO han sido facturados
+    - opcionalmente filtrados por cliente (NOMBRE)
+    """
     cur = None
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -71,8 +77,8 @@ def get_servicios_facturables(
 
 
 # ============================================================
-# ⚠️ ESTA RUTA SIEMPRE AL FINAL
 # GET /servicios/{servicio_id}
+# (ruta dinámica, ya NO colisiona)
 # ============================================================
 @router.get("/{servicio_id}")
 def get_servicio(

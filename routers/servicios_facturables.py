@@ -27,6 +27,9 @@ def get_servicios_facturables(
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+        # ====================================================
+        # QUERY BASE
+        # ====================================================
         sql = """
             SELECT
                 s.consec,
@@ -50,13 +53,17 @@ def get_servicios_facturables(
                 s.factura
             FROM servicios s
             WHERE
-                s.estado = 'FINALIZADO'
+                s.estado = 'Finalizado'
                 AND s.num_informe IS NOT NULL
+                AND s.num_informe <> ''
                 AND s.factura IS NULL
         """
 
         params = []
 
+        # ====================================================
+        # FILTRO POR CLIENTE (CÓDIGO)
+        # ====================================================
         if cliente:
             sql += " AND s.cliente = %s"
             params.append(cliente)

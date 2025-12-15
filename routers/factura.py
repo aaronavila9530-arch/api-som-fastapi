@@ -17,7 +17,6 @@ router = APIRouter(
 @router.post("/manual")
 def crear_factura_manual(payload: dict, conn=Depends(get_db)):
 
-    # Import diferido (evita crash al arrancar)
     try:
         from services.pdf.factura_manual_pdf import generar_factura_manual_pdf
     except ImportError:
@@ -30,7 +29,6 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
     cur_dict = None
 
     try:
-        # Validación mínima
         if not payload.get("servicios"):
             raise HTTPException(
                 status_code=400,
@@ -64,11 +62,12 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
 
         factura_id = cur.fetchone()[0]
 
-        # ================= Detalles =================
+        # ================= Detalles + vinculación =================
         for linea in payload["servicios"]:
             cantidad = float(linea.get("cantidad", 0))
             precio = float(linea.get("precio_unitario", 0))
             total_linea = cantidad * precio
+            servicio_id = linea.get("servicio_id")
 
             cur.execute("""
                 INSERT INTO factura_detalle (
@@ -87,7 +86,6 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
                 total_linea
             ))
 
-            # Vincular servicio
             cur.execute("""
                 INSERT INTO factura_servicio (
                     factura_id,
@@ -97,9 +95,16 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
                 VALUES (%s, %s, %s)
             """, (
                 factura_id,
-                linea.get("servicio_id"),
+                servicio_id,
                 linea.get("num_informe")
             ))
+
+            # 🔒 MARCAR SERVICIO COMO FACTURADO
+            cur.execute("""
+                UPDATE servicios
+                SET factura = %s
+                WHERE consec = %s
+            """, (factura_id, servicio_id))
 
         # ================= Generar PDF =================
         cur_dict = conn.cursor(cursor_factory=RealDictCursor)
@@ -238,6 +243,13 @@ def cargar_factura_electronica(
             servicio_id,
             num_informe
         ))
+
+        # 🔒 MARCAR SERVICIO COMO FACTURADO
+        cur.execute("""
+            UPDATE servicios
+            SET factura = %s
+            WHERE consec = %s
+        """, (factura_id, servicio_id))
 
         conn.commit()
 

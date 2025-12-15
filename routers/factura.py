@@ -77,7 +77,7 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
         # ====================================================
         cur.execute("""
             SELECT codigo
-            FROM cliente
+            FROM clientes
             WHERE
                 nombrecomercial = %s
                 OR nombrejuridico = %s
@@ -175,7 +175,7 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
         pdf_data = {
             "numero_factura": numero_factura,
             "fecha_factura": fecha_factura,
-            "cliente": servicio["cliente"],  # nombre (UI/visual)
+            "cliente": servicio["cliente"],  # nombre visible
             "buque": servicio["buque_contenedor"],
             "operacion": servicio["operacion"],
             "num_informe": servicio["num_informe"],

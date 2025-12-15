@@ -1,6 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
 from psycopg2.extras import RealDictCursor
-from services.pdf.factura_manual_pdf import generar_factura_manual_pdf
 import os
 from fastapi import UploadFile, File, Form
 from services.xml.factura_electronica_parser import parse_factura_electronica
@@ -18,9 +17,20 @@ router = APIRouter(
 # ============================================================
 @router.post("/manual")
 def crear_factura_manual(payload: dict, conn=Depends(get_db)):
+
+    # ====================================================
+    # IMPORT DIFERIDO (NO CRASHEA LA API AL ARRANCAR)
+    # ====================================================
+    try:
+        from services.pdf.factura_manual_pdf import generar_factura_manual_pdf
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail="El módulo de generación de PDF no está disponible."
+        )
+
     try:
         cur = conn.cursor()
-
         # ====================================================
         # 1. Crear factura (cabecera)
         # ====================================================

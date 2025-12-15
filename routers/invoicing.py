@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg2.extras import RealDictCursor
+from servicios_op import get_servicios_facturables_por_cliente
 
 from database import get_db
 
@@ -90,3 +91,32 @@ def get_servicios_facturables(
     finally:
         if cur:
             cur.close()
+
+
+@router.get("/facturables")
+def get_facturables(cliente: str, conn=Depends(get_db)):
+
+    if not cliente:
+        raise HTTPException(
+            status_code=400,
+            detail="El cliente es obligatorio"
+        )
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        data = get_servicios_facturables_por_cliente(cur, cliente)
+
+        return {
+            "total": len(data),
+            "data": data
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+    finally:
+        cur.close()

@@ -18,7 +18,6 @@ from routers.servicios_op import router as servicios_router
 from routers.continentes_paises_puertos import router as cpp_router
 from routers.version import router as version_router
 from routers.cliente_credito import router as cliente_credito_router
-from routers.servicios_facturables import router as servicios_facturables_router
 from routers.factura import router as factura_router
 from routers import invoicing
 

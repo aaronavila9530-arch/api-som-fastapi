@@ -7,12 +7,12 @@ from datetime import datetime
 
 
 # ============================================================
-# CONFIGURACIÓN GENERAL
+# CONFIGURACIÓN GENERAL (COMPATIBLE CON RAILWAY / DOCKER)
 # ============================================================
-BASE_DIR = os.path.join("backend_api", "storage", "pdf")
+BASE_DIR = "/tmp/pdf"
 os.makedirs(BASE_DIR, exist_ok=True)
 
-COLOR_PRINCIPAL = HexColor("#1F4E79")   # Azul corporativo
+COLOR_PRINCIPAL = HexColor("#1F4E79")
 COLOR_GRIS = HexColor("#F2F2F2")
 
 
@@ -36,27 +36,58 @@ def generar_factura_manual_pdf(data: dict) -> str:
     }
     """
 
-    nombre_pdf = f"Factura_{data['numero_factura']}.pdf"
+    # ==================== HELPERS SEGUROS ====================
+    def safe(val, default=""):
+        return default if val in (None, "") else val
+
+    numero_factura = safe(data.get("numero_factura"), "—")
+    cliente = safe(data.get("cliente"))
+    buque = safe(data.get("buque"))
+    operacion = safe(data.get("operacion"))
+    periodo = safe(data.get("periodo"))
+    descripcion = safe(data.get("descripcion"))
+    moneda = safe(data.get("moneda"), "USD")
+    termino_pago = safe(data.get("termino_pago"), 0)
+
+    try:
+        total = float(safe(data.get("total"), 0))
+    except Exception:
+        total = 0.0
+
+    fecha = data.get("fecha_factura")
+    if isinstance(fecha, datetime):
+        fecha = fecha.strftime("%d/%m/%Y")
+    else:
+        fecha = safe(fecha)
+
+    num_informe = safe(data.get("num_informe"))
+
+    # ==================== ARCHIVO ====================
+    nombre_pdf = f"Factura_{numero_factura}.pdf"
     ruta_pdf = os.path.join(BASE_DIR, nombre_pdf)
 
     c = canvas.Canvas(ruta_pdf, pagesize=A4)
     width, height = A4
 
     # ========================================================
-    # ENCABEZADO – EMISOR (1)
+    # ENCABEZADO – EMISOR
     # ========================================================
     c.setFillColor(COLOR_PRINCIPAL)
     c.rect(1.5 * cm, height - 3.5 * cm, width - 3 * cm, 2.5 * cm, fill=0)
 
     c.setFont("Helvetica-Bold", 14)
-    c.drawString(2 * cm, height - 2.2 * cm, "MSL MARINE SURVEYORS & LOGISTICS GROUP SRL")
+    c.drawString(
+        2 * cm,
+        height - 2.2 * cm,
+        "MSL MARINE SURVEYORS & LOGISTICS GROUP SRL"
+    )
 
     c.setFont("Helvetica", 9)
     c.drawString(2 * cm, height - 2.9 * cm, "Cédula Jurídica: 3-102-920372")
     c.drawString(2 * cm, height - 3.4 * cm, "Correo: info@mslmarine.com | Tel: +506 4052-8382")
 
     # ========================================================
-    # CLIENTE + FACTURA (2)
+    # CLIENTE + FACTURA
     # ========================================================
     y = height - 5 * cm
 
@@ -65,19 +96,15 @@ def generar_factura_manual_pdf(data: dict) -> str:
     c.setFillColor(black)
 
     c.setFont("Helvetica-Bold", 10)
-    c.drawString(2 * cm, y + 2.1 * cm, f"FACTURA N° {data['numero_factura']}")
-    c.drawString(2 * cm, y + 1.5 * cm, f"Cliente: {data['cliente']}")
-
-    fecha = data["fecha_factura"]
-    if isinstance(fecha, datetime):
-        fecha = fecha.strftime("%d/%m/%Y")
+    c.drawString(2 * cm, y + 2.1 * cm, f"FACTURA N° {numero_factura}")
+    c.drawString(2 * cm, y + 1.5 * cm, f"Cliente: {cliente}")
 
     c.setFont("Helvetica", 9)
     c.drawString(2 * cm, y + 0.9 * cm, f"Fecha factura: {fecha}")
-    c.drawString(2 * cm, y + 0.3 * cm, f"N° Informe: {data['num_informe']}")
+    c.drawString(2 * cm, y + 0.3 * cm, f"N° Informe: {num_informe}")
 
     # ========================================================
-    # TÉRMINOS DE PAGO (3)
+    # TÉRMINOS DE PAGO
     # ========================================================
     y -= 2.2 * cm
 
@@ -92,11 +119,11 @@ def generar_factura_manual_pdf(data: dict) -> str:
     c.drawString(
         2 * cm,
         y + 0.3 * cm,
-        f"{data['termino_pago']} días | Moneda: {data['moneda']}"
+        f"{termino_pago} días | Moneda: {moneda}"
     )
 
     # ========================================================
-    # DESCRIPCIÓN (4)
+    # DESCRIPCIÓN
     # ========================================================
     y -= 4.2 * cm
 
@@ -109,15 +136,15 @@ def generar_factura_manual_pdf(data: dict) -> str:
 
     c.setFont("Helvetica", 9)
     text = c.beginText(2 * cm, y + 2.6 * cm)
-    text.textLine(f"Buque / Contenedor: {data['buque']}")
-    text.textLine(f"Operación: {data['operacion']}")
-    text.textLine(f"Periodo de operación: {data['periodo']}")
+    text.textLine(f"Buque / Contenedor: {buque}")
+    text.textLine(f"Operación: {operacion}")
+    text.textLine(f"Periodo de operación: {periodo}")
     text.textLine("")
-    text.textLine(data["descripcion"])
+    text.textLine(descripcion)
     c.drawText(text)
 
     # ========================================================
-    # TOTAL (5)
+    # TOTAL
     # ========================================================
     y -= 2.2 * cm
 
@@ -128,11 +155,11 @@ def generar_factura_manual_pdf(data: dict) -> str:
     c.drawRightString(
         width - 2 * cm,
         y + 0.5 * cm,
-        f"TOTAL {data['moneda']} {float(data['total']):,.2f}"
+        f"TOTAL {moneda} {total:,.2f}"
     )
 
     # ========================================================
-    # DATOS BANCARIOS (6)
+    # DATOS BANCARIOS
     # ========================================================
     y -= 3.2 * cm
 

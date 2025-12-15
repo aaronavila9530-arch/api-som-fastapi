@@ -1,7 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
-
 from database import get_db
 
 router = APIRouter(
@@ -77,7 +76,7 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
         # ====================================================
         cur.execute("""
             SELECT codigo
-            FROM clientes
+            FROM cliente  -- Modificado de 'clientes' a 'cliente'
             WHERE
                 nombrecomercial = %s
                 OR nombrejuridico = %s

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg2.extras import RealDictCursor
-from typing import Optional, List, Dict, Any
+from typing import Optional
 
 from database import get_db
 
@@ -12,27 +12,18 @@ router = APIRouter(
 # ============================================================
 # GET /servicios/facturables
 # ============================================================
-@router.get(
-    "/facturables",
-    response_model=Dict[str, Any]
-)
+@router.get("/facturables")
 def get_servicios_facturables(
     cliente: Optional[str] = Query(None),
     conn=Depends(get_db)
 ):
     """
-    Retorna servicios facturables:
-    - estado = FINALIZADO
-    - num_informe IS NOT NULL
+    Retorna servicios:
+    - FINALIZADOS
+    - con num_informe
     - NO facturados
     - opcionalmente filtrados por cliente
     """
-
-    if not conn:
-        raise HTTPException(
-            status_code=500,
-            detail="No se pudo obtener conexión a la base de datos"
-        )
 
     cur = None
     try:
@@ -61,6 +52,7 @@ def get_servicios_facturables(
 
         params = []
 
+        # 🔹 FILTRO POR CLIENTE SOLO SI SE ENVÍA
         if cliente:
             sql += " AND s.cliente = %s"
             params.append(cliente)

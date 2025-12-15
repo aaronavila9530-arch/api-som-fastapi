@@ -3,13 +3,16 @@ from psycopg2.extras import RealDictCursor
 from datetime import datetime
 
 from database import get_db
-from services.xml.factura_electronica_parser import parse_factura_electronica
 
 router = APIRouter(
     prefix="/factura",
     tags=["Facturación"]
 )
 
+
+# ============================================================
+# OBTENER SIGUIENTE NÚMERO DE FACTURA
+# ============================================================
 def obtener_siguiente_numero_factura(cur):
     cur.execute("""
         SELECT COALESCE(
@@ -22,6 +25,9 @@ def obtener_siguiente_numero_factura(cur):
     return cur.fetchone()[0] + 1
 
 
+# ============================================================
+# CREAR FACTURA MANUAL
+# ============================================================
 @router.post("/manual")
 def crear_factura_manual(payload: dict, conn=Depends(get_db)):
 
@@ -47,7 +53,9 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
 
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # ================= OBTENER SERVICIO =================
+        # ====================================================
+        # OBTENER SERVICIO
+        # ====================================================
         cur.execute("""
             SELECT *
             FROM servicios
@@ -64,11 +72,34 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
                 detail="Este servicio ya fue facturado"
             )
 
-        # ================= NUMERO FACTURA =================
+        # ====================================================
+        # OBTENER TÉRMINO DE PAGO DESDE CLIENTE_CRÉDITO
+        # ====================================================
+        cur.execute("""
+            SELECT termino_pago
+            FROM cliente_credito
+            WHERE codigo_cliente = %s
+        """, (servicio["cliente"],))
+
+        credito = cur.fetchone()
+
+        if not credito or credito.get("termino_pago") is None:
+            raise HTTPException(
+                status_code=400,
+                detail="El cliente no tiene término de pago configurado"
+            )
+
+        termino_pago = int(credito["termino_pago"])
+
+        # ====================================================
+        # NÚMERO Y FECHA FACTURA
+        # ====================================================
         numero_factura = obtener_siguiente_numero_factura(cur)
         fecha_factura = datetime.now()
 
-        # ================= INSERT FACTURA =================
+        # ====================================================
+        # INSERT FACTURA
+        # ====================================================
         cur.execute("""
             INSERT INTO factura (
                 tipo_factura,
@@ -88,14 +119,16 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
             numero_factura,
             servicio["cliente"],
             fecha_factura,
-            payload.get("termino_pago"),
+            termino_pago,
             payload.get("moneda", "USD"),
             total
         ))
 
         factura_id = cur.fetchone()["id"]
 
-        # ================= DETALLE =================
+        # ====================================================
+        # DETALLE FACTURA
+        # ====================================================
         cur.execute("""
             INSERT INTO factura_detalle (
                 factura_id,
@@ -112,7 +145,9 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
             total
         ))
 
-        # ================= PDF =================
+        # ====================================================
+        # GENERAR PDF
+        # ====================================================
         pdf_data = {
             "numero_factura": numero_factura,
             "fecha_factura": fecha_factura,
@@ -123,20 +158,24 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
             "periodo": f"{servicio['fecha_inicio']} a {servicio['fecha_fin']}",
             "descripcion": payload.get("descripcion"),
             "moneda": payload.get("moneda", "USD"),
-            "termino_pago": payload.get("termino_pago"),
+            "termino_pago": termino_pago,
             "total": total
         }
 
         pdf_path = generar_factura_manual_pdf(pdf_data)
 
-        # ================= UPDATE FACTURA =================
+        # ====================================================
+        # ACTUALIZAR FACTURA CON PDF
+        # ====================================================
         cur.execute("""
             UPDATE factura
             SET pdf_path = %s
             WHERE id = %s
         """, (pdf_path, factura_id))
 
-        # ================= BLOQUEAR SERVICIO =================
+        # ====================================================
+        # BLOQUEAR SERVICIO
+        # ====================================================
         cur.execute("""
             UPDATE servicios
             SET
@@ -149,7 +188,7 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
             numero_factura,
             total,
             fecha_factura.date(),
-            payload.get("termino_pago"),
+            termino_pago,
             servicio_id
         ))
 
@@ -173,6 +212,9 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
             cur.close()
 
 
+# ============================================================
+# OBTENER FACTURA POR ID
+# ============================================================
 @router.get("/{factura_id}")
 def get_factura(factura_id: int, conn=Depends(get_db)):
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -190,9 +232,9 @@ def get_factura(factura_id: int, conn=Depends(get_db)):
     """, (factura_id,))
     detalles = cur.fetchall()
 
+    cur.close()
+
     return {
         "factura": factura,
         "detalles": detalles
     }
-
-

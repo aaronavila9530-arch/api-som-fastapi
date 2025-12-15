@@ -52,8 +52,8 @@ def generar_factura_manual_pdf(data: dict) -> str:
     c.drawString(2 * cm, height - 2.2 * cm, "MSL MARINE SURVEYORS & LOGISTICS GROUP SRL")
 
     c.setFont("Helvetica", 9)
-    c.drawString(2 * cm, height - 2.9 * cm, "Cédula Jurídica: 3-102-XXXXXX")
-    c.drawString(2 * cm, height - 3.4 * cm, "Correo: info@mslmarine.com | Tel: +506 XXXX-XXXX")
+    c.drawString(2 * cm, height - 2.9 * cm, "Cédula Jurídica: 3-102-920372")
+    c.drawString(2 * cm, height - 3.4 * cm, "Correo: info@mslmarine.com | Tel: +506 4052-8382")
 
     # ========================================================
     # CLIENTE + FACTURA (2)

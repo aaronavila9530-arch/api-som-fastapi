@@ -10,18 +10,25 @@ router = APIRouter(
 
 
 # ============================================================
-# OBTENER SIGUIENTE NÚMERO DE FACTURA
+# OBTENER SIGUIENTE NÚMERO DE FACTURA (SEGURO CON RealDictCursor)
 # ============================================================
 def obtener_siguiente_numero_factura(cur):
+
     cur.execute("""
         SELECT COALESCE(
             MAX(numero_factura::int),
             2199
-        )
+        ) AS ultimo
         FROM factura
         WHERE tipo_factura = 'MANUAL'
     """)
-    return cur.fetchone()[0] + 1
+
+    row = cur.fetchone()
+
+    if not row or row.get("ultimo") is None:
+        return 2200
+
+    return int(row["ultimo"]) + 1
 
 
 # ============================================================

@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # Conexión SQL
 import database
 
-# Routers (todos viven en la carpeta routers/)
+# Routers
 from routers.empleados import router as empleados_router
 from routers.surveyores import router as surveyores_router
 from routers.clientes import router as clientes_router
@@ -19,7 +19,9 @@ from routers.continentes_paises_puertos import router as cpp_router
 from routers.version import router as version_router
 from routers.cliente_credito import router as cliente_credito_router
 from routers.factura import router as factura_router
-from routers import invoicing
+from routers.invoicing import router as invoicing_router
+from routers.billing import router as billing_router
+
 
 
 # ============================================================
@@ -103,6 +105,7 @@ app.include_router(version_router, tags=["Version"])
 app.include_router(cliente_credito_router)
 app.include_router(factura_router)
 app.include_router(invoicing.router)
+app.include_router(billing.router)
 
 # ============================================================
 # EJECUCIÓN LOCAL

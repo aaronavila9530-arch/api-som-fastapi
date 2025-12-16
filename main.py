@@ -104,7 +104,7 @@ app.include_router(cpp_router)
 app.include_router(version_router, tags=["Version"])
 app.include_router(cliente_credito_router)
 app.include_router(factura_router)
-app.include_router(invoicing.router)
+app.include_router(invoicing_router)
 app.include_router(billing_router)
 
 # ============================================================

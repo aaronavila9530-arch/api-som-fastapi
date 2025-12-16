@@ -1,9 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg2.extras import RealDictCursor
-from services.servicios_facturacion import (
-    get_servicios_facturables_por_cliente
-)
-
+from datetime import date
 from database import get_db
 
 router = APIRouter(
@@ -16,101 +13,158 @@ router = APIRouter(
 # ============================================================
 @router.get("/facturables")
 def get_servicios_facturables(
-    cliente: str = Query(..., min_length=1, description="Código del cliente"),
+    cliente: str = Query(..., min_length=1),
     conn=Depends(get_db)
 ):
-    """
-    Devuelve los servicios de UN cliente que:
-    - están FINALIZADOS
-    - tienen número de informe
-    - NO han sido facturados
-    """
+    cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    if not conn:
-        raise HTTPException(
-            status_code=500,
-            detail="No se pudo obtener conexión a la base de datos"
-        )
-
-    cur = None
     try:
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-
-        sql = """
+        cur.execute("""
             SELECT
                 consec,
-                tipo,
-                estado,
                 num_informe,
                 buque_contenedor,
-                cliente,
-                contacto,
-                detalle,
-                continente,
-                pais,
-                puerto,
                 operacion,
-                surveyor,
-                honorarios,
-                costo_operativo,
                 fecha_inicio,
-                hora_inicio,
                 fecha_fin,
-                hora_fin,
-                demoras,
-                duracion,
-                factura,
-                valor_factura,
-                fecha_factura,
+                cliente,
+                detalle,
                 terminos_pago,
-                fecha_vencimiento,
-                dias_vencido
+                honorarios,
+                factura
             FROM servicios
             WHERE
                 cliente = %s
                 AND estado = 'Finalizado'
                 AND num_informe IS NOT NULL
-                AND num_informe <> ''
                 AND factura IS NULL
-            ORDER BY fecha_inicio NULLS LAST
-        """
+            ORDER BY fecha_inicio
+        """, (cliente,))
 
-        cur.execute(sql, (cliente,))
         data = cur.fetchall()
 
         return {
-            "cliente": cliente,
             "total": len(data),
             "data": data
         }
 
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error SQL Invoicing Facturables: {str(e)}"
-        )
-
     finally:
-        if cur:
-            cur.close()
+        cur.close()
 
 
-@router.get("/facturables")
-def servicios_facturables(cliente: str, conn=Depends(get_db)):
-
-    if not cliente:
-        raise HTTPException(
-            status_code=400,
-            detail="El cliente es obligatorio"
-        )
+# ============================================================
+# POST /invoicing/emitir
+# EMITE FACTURA Y GUARDA SNAPSHOT COMPLETO
+# ============================================================
+@router.post("/emitir")
+def emitir_factura(
+    payload: dict,
+    conn=Depends(get_db)
+):
+    """
+    payload esperado:
+    {
+        servicio_id,
+        tipo_factura,
+        numero_documento,
+        moneda,
+        total,
+        termino_pago,
+        descripcion
+    }
+    """
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        data = get_servicios_facturables_por_cliente(cur, cliente)
+        # 1️⃣ Obtener servicio
+        cur.execute("""
+            SELECT *
+            FROM servicios
+            WHERE consec = %s
+        """, (payload["servicio_id"],))
+
+        servicio = cur.fetchone()
+        if not servicio:
+            raise HTTPException(404, "Servicio no encontrado")
+
+        # 2️⃣ Calcular periodo operación
+        periodo = ""
+        if servicio.get("fecha_inicio") and servicio.get("fecha_fin"):
+            periodo = f"{servicio['fecha_inicio']} → {servicio['fecha_fin']}"
+
+        # 3️⃣ INSERT SNAPSHOT EN INVOICING
+        cur.execute("""
+            INSERT INTO invoicing (
+                factura_id,
+                tipo_factura,
+                tipo_documento,
+                numero_documento,
+                codigo_cliente,
+                nombre_cliente,
+                fecha_emision,
+                moneda,
+                total,
+                num_informe,
+                termino_pago,
+                buque_contenedor,
+                operacion,
+                periodo_operacion,
+                descripcion_servicio
+            ) VALUES (
+                %(factura_id)s,
+                %(tipo_factura)s,
+                'FACTURA',
+                %(numero_documento)s,
+                %(codigo_cliente)s,
+                %(nombre_cliente)s,
+                NOW(),
+                %(moneda)s,
+                %(total)s,
+                %(num_informe)s,
+                %(termino_pago)s,
+                %(buque_contenedor)s,
+                %(operacion)s,
+                %(periodo_operacion)s,
+                %(descripcion_servicio)s
+            )
+            RETURNING id
+        """, {
+            "factura_id": servicio["consec"],
+            "tipo_factura": payload["tipo_factura"],
+            "numero_documento": payload["numero_documento"],
+            "codigo_cliente": servicio["cliente"],
+            "nombre_cliente": servicio["cliente"],
+            "moneda": payload["moneda"],
+            "total": payload["total"],
+            "num_informe": servicio["num_informe"],
+            "termino_pago": payload["termino_pago"],
+            "buque_contenedor": servicio.get("buque_contenedor"),
+            "operacion": servicio.get("operacion"),
+            "periodo_operacion": periodo,
+            "descripcion_servicio": payload.get("descripcion", "")
+        })
+
+        factura_id = cur.fetchone()["id"]
+
+        # 4️⃣ Marcar servicio como facturado
+        cur.execute("""
+            UPDATE servicios
+            SET factura = %s
+            WHERE consec = %s
+        """, (payload["numero_documento"], servicio["consec"]))
+
+        conn.commit()
+
         return {
-            "total": len(data),
-            "data": data
+            "status": "ok",
+            "factura_id": factura_id,
+            "numero_documento": payload["numero_documento"]
         }
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(500, f"Error emitiendo factura: {str(e)}")
+
     finally:
         cur.close()

@@ -21,6 +21,7 @@ from routers.cliente_credito import router as cliente_credito_router
 from routers.factura import router as factura_router
 from routers.invoicing import router as invoicing_router
 from routers.billing import router as billing_router
+from routers.collections import router as collections_router
 
 
 
@@ -106,6 +107,7 @@ app.include_router(cliente_credito_router)
 app.include_router(factura_router)
 app.include_router(invoicing_router)
 app.include_router(billing_router)
+app.include_router(collections_router)
 
 # ============================================================
 # EJECUCIÓN LOCAL

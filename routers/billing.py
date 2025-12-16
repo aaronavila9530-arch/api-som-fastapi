@@ -13,46 +13,24 @@ router = APIRouter(
 
 # ============================================================
 # GET /billing/search
-# Búsqueda de documentos de facturación (emitidos)
 # ============================================================
 @router.get("/search")
 def buscar_billing(
-    cliente: Optional[str] = Query(
-        None,
-        description="Nombre del cliente o ALL para todos"
-    ),
-    fecha_desde: Optional[date] = Query(
-        None,
-        description="Fecha inicio (YYYY-MM-DD)"
-    ),
-    fecha_hasta: Optional[date] = Query(
-        None,
-        description="Fecha fin (YYYY-MM-DD)"
-    ),
-    tipo_factura: Optional[str] = Query(
-        None,
-        description="MANUAL | ELECTRONICA"
-    ),
-    tipo_documento: Optional[str] = Query(
-        None,
-        description="FACTURA | NOTA_CREDITO"
-    ),
+    cliente: Optional[str] = Query(None),
+    fecha_desde: Optional[date] = Query(None),
+    fecha_hasta: Optional[date] = Query(None),
+    tipo_factura: Optional[str] = Query(None),
+    tipo_documento: Optional[str] = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     conn=Depends(get_db)
 ):
-    """
-    Devuelve documentos de facturación emitidos (facturas / notas de crédito)
-    usando filtros opcionales y paginación.
-    """
-
     offset = (page - 1) * page_size
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     filtros = []
     params = {}
 
-    # ================= FILTROS =================
     if cliente and cliente.upper() != "ALL":
         filtros.append("nombre_cliente ILIKE %(cliente)s")
         params["cliente"] = f"%{cliente}%"
@@ -75,40 +53,36 @@ def buscar_billing(
 
     where_sql = "WHERE " + " AND ".join(filtros) if filtros else ""
 
-    # ================= TOTAL =================
+    # -------- TOTAL --------
     cur.execute(
         f"""
         SELECT COUNT(*) AS total
-        FROM factura
+        FROM invoicing
         {where_sql}
         """,
         params
     )
     total = cur.fetchone()["total"]
 
-    # ================= DATA =================
+    # -------- DATA --------
     cur.execute(
         f"""
         SELECT
             id,
             tipo_factura,
             tipo_documento,
-            numero_factura        AS numero_documento,
+            numero_documento,
             nombre_cliente,
             fecha_emision,
             moneda,
             total,
             estado
-        FROM factura
+        FROM invoicing
         {where_sql}
         ORDER BY fecha_emision DESC
         LIMIT %(limit)s OFFSET %(offset)s
         """,
-        {
-            **params,
-            "limit": page_size,
-            "offset": offset
-        }
+        {**params, "limit": page_size, "offset": offset}
     )
 
     data = cur.fetchall()
@@ -123,58 +97,47 @@ def buscar_billing(
 
 
 # ============================================================
-# GET /billing/{numero_factura}
-# Devuelve factura completa para Preview (Billing / Invoicing)
+# GET /billing/{numero_documento}
+# Preview de factura (PopupPreviewFactura)
 # ============================================================
-@router.get("/{numero_factura}")
-def get_factura(
-    numero_factura: str,
-    conn=Depends(get_db)
-):
+@router.get("/{numero_documento}")
+def get_factura(numero_documento: str, conn=Depends(get_db)):
+
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     cur.execute("""
         SELECT *
-        FROM factura
-        WHERE numero_factura = %s
-    """, (numero_factura,))
+        FROM invoicing
+        WHERE numero_documento = %s
+    """, (numero_documento,))
 
     factura = cur.fetchone()
     cur.close()
 
     if not factura:
-        raise HTTPException(
-            status_code=404,
-            detail="Factura no encontrada"
-        )
+        raise HTTPException(404, "Factura no encontrada")
 
     return factura
 
 
 # ============================================================
-# GET /billing/pdf/{numero_factura}
-# Devuelve ruta del PDF
+# GET /billing/pdf/{numero_documento}
 # ============================================================
-@router.get("/pdf/{numero_factura}")
-def obtener_pdf_factura(
-    numero_factura: str,
-    conn=Depends(get_db)
-):
+@router.get("/pdf/{numero_documento}")
+def obtener_pdf_factura(numero_documento: str, conn=Depends(get_db)):
+
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     cur.execute("""
         SELECT pdf_path
-        FROM factura
-        WHERE numero_factura = %s
-    """, (numero_factura,))
+        FROM invoicing
+        WHERE numero_documento = %s
+    """, (numero_documento,))
 
     row = cur.fetchone()
     cur.close()
 
-    if not row or not row.get("pdf_path"):
-        raise HTTPException(
-            status_code=404,
-            detail="PDF no encontrado"
-        )
+    if not row or not row["pdf_path"]:
+        raise HTTPException(404, "PDF no encontrado")
 
     return {"pdf_path": row["pdf_path"]}

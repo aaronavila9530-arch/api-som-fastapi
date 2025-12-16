@@ -59,6 +59,7 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
 
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
+
         # ====================================================
         # OBTENER SERVICIO
         # ====================================================
@@ -204,6 +205,51 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
         """, (pdf_path, factura_id))
 
         # ====================================================
+        # INSERTAR EN TABLA INVOICING (MANUAL)
+        # ====================================================
+        cur.execute("""
+            INSERT INTO invoicing (
+                factura_id,
+                tipo_factura,
+                tipo_documento,
+                numero_documento,
+                codigo_cliente,
+                nombre_cliente,
+                fecha_emision,
+                moneda,
+                total,
+                estado,
+                pdf_path,
+                created_at
+            )
+            VALUES (
+                %s,
+                'MANUAL',
+                'FACTURA',
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                'EMITIDA',
+                %s,
+                NOW()
+            )
+        """, (
+            factura_id,
+            numero_factura,
+            codigo_cliente,
+            servicio["cliente"],
+            fecha_factura,
+            payload.get("moneda", "USD"),
+            total,
+            pdf_path
+        ))
+
+
+
+        # ====================================================
         # BLOQUEAR SERVICIO
         # ====================================================
         cur.execute("""
@@ -306,3 +352,74 @@ def descargar_pdf_factura(factura_id: int, conn=Depends(get_db)):
         media_type="application/pdf",
         filename=os.path.basename(pdf_path)
     )
+
+
+@router.post("/electronica")
+def crear_factura_electronica(
+    xml_path: str,
+    codigo_cliente: str,
+    nombre_cliente: str,
+    conn=Depends(get_db)
+):
+    from services.factura_electronica_parser import parse_factura_electronica
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        data = parse_factura_electronica(xml_path)
+
+        numero_documento = data["numero_factura"]
+        fecha_emision = data["fecha_emision"]
+        moneda = data["moneda"]
+        total = data["total"]
+
+        pdf_path = None
+
+        cur.execute("""
+            INSERT INTO invoicing (
+                factura_id,
+                tipo_factura,
+                tipo_documento,
+                numero_documento,
+                codigo_cliente,
+                nombre_cliente,
+                fecha_emision,
+                moneda,
+                total,
+                estado,
+                pdf_path,
+                created_at
+            )
+            VALUES (
+                NULL,
+                'ELECTRONICA',
+                'FACTURA',
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                'EMITIDA',
+                %s,
+                NOW()
+            )
+        """, (
+            numero_documento,
+            codigo_cliente,
+            nombre_cliente,
+            fecha_emision,
+            moneda,
+            total,
+            pdf_path
+        ))
+
+        conn.commit()
+        return {"status": "ok"}
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        cur.close()
+

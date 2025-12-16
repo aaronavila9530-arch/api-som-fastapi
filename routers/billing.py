@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from psycopg2.extras import RealDictCursor
 from typing import Optional
 from datetime import date
@@ -10,7 +10,6 @@ router = APIRouter(
     prefix="/billing",
     tags=["Billing"]
 )
-
 
 # ============================================================
 # GET /billing/search
@@ -80,7 +79,7 @@ def buscar_billing(
     cur.execute(
         f"""
         SELECT COUNT(*) AS total
-        FROM invoicing
+        FROM factura
         {where_sql}
         """,
         params
@@ -94,13 +93,13 @@ def buscar_billing(
             id,
             tipo_factura,
             tipo_documento,
-            numero_documento,
+            numero_factura        AS numero_documento,
             nombre_cliente,
             fecha_emision,
             moneda,
             total,
             estado
-        FROM invoicing
+        FROM factura
         {where_sql}
         ORDER BY fecha_emision DESC
         LIMIT %(limit)s OFFSET %(offset)s
@@ -123,9 +122,44 @@ def buscar_billing(
     }
 
 
-@router.get("/pdf/{numero_factura}")
-def obtener_pdf_factura(numero_factura: int, conn=Depends(get_db)):
+# ============================================================
+# GET /billing/{numero_factura}
+# Devuelve factura completa para Preview (Billing / Invoicing)
+# ============================================================
+@router.get("/{numero_factura}")
+def get_factura(
+    numero_factura: str,
+    conn=Depends(get_db)
+):
+    cur = conn.cursor(cursor_factory=RealDictCursor)
 
+    cur.execute("""
+        SELECT *
+        FROM factura
+        WHERE numero_factura = %s
+    """, (numero_factura,))
+
+    factura = cur.fetchone()
+    cur.close()
+
+    if not factura:
+        raise HTTPException(
+            status_code=404,
+            detail="Factura no encontrada"
+        )
+
+    return factura
+
+
+# ============================================================
+# GET /billing/pdf/{numero_factura}
+# Devuelve ruta del PDF
+# ============================================================
+@router.get("/pdf/{numero_factura}")
+def obtener_pdf_factura(
+    numero_factura: str,
+    conn=Depends(get_db)
+):
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     cur.execute("""
@@ -137,7 +171,10 @@ def obtener_pdf_factura(numero_factura: int, conn=Depends(get_db)):
     row = cur.fetchone()
     cur.close()
 
-    if not row or not row["pdf_path"]:
-        raise HTTPException(404, "PDF no encontrado")
+    if not row or not row.get("pdf_path"):
+        raise HTTPException(
+            status_code=404,
+            detail="PDF no encontrado"
+        )
 
     return {"pdf_path": row["pdf_path"]}

@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
 from database import get_db
+import os
+from fastapi.responses import FileResponse
 
 router = APIRouter(
     prefix="/factura",

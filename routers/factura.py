@@ -268,3 +268,41 @@ def get_factura(factura_id: int, conn=Depends(get_db)):
         "factura": factura,
         "detalles": detalles
     }
+
+
+# ============================================================
+# DESCARGAR PDF DE FACTURA
+# ============================================================
+@router.get("/pdf/{factura_id}")
+def descargar_pdf_factura(factura_id: int, conn=Depends(get_db)):
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("""
+        SELECT pdf_path
+        FROM factura
+        WHERE id = %s
+    """, (factura_id,))
+
+    row = cur.fetchone()
+    cur.close()
+
+    if not row or not row.get("pdf_path"):
+        raise HTTPException(
+            status_code=404,
+            detail="PDF de la factura no encontrado"
+        )
+
+    pdf_path = row["pdf_path"]
+
+    if not os.path.exists(pdf_path):
+        raise HTTPException(
+            status_code=404,
+            detail="El archivo PDF no existe en el servidor"
+        )
+
+    return FileResponse(
+        pdf_path,
+        media_type="application/pdf",
+        filename=os.path.basename(pdf_path)
+    )

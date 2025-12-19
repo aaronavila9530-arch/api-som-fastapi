@@ -430,11 +430,7 @@ def search_collections(
     }
 
 
-# ============================================================
-# POST /collections/disputa
-# Crear una disputa de factura
-# ============================================================
-@router.post("/disputa")
+@router.post("/collections/disputa")
 def crear_disputa(payload: dict, conn=Depends(get_db)):
 
     cur = None
@@ -442,27 +438,39 @@ def crear_disputa(payload: dict, conn=Depends(get_db)):
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # ====================================================
-        # 1️⃣ Generar dispute_case secuencial (ROBUSTO)
-        # ====================================================
+        # ================================
+        # VALIDAR PAYLOAD MÍNIMO
+        # ================================
+        numero_documento = str(payload.get("numero_documento") or "").strip()
+        codigo_cliente = str(payload.get("codigo_cliente") or "").strip()
+        nombre_cliente = str(payload.get("nombre_cliente") or "").strip()
+        motivo = str(payload.get("motivo") or "").strip()
+        comentario = str(payload.get("comentario") or "").strip()
+
+        if not numero_documento:
+            raise HTTPException(400, "numero_documento es requerido")
+        if not motivo:
+            raise HTTPException(400, "motivo es requerido")
+        if not comentario:
+            raise HTTPException(400, "comentario es requerido")
+
+        # ================================
+        # 1️⃣ dispute_case seguro
+        # ================================
         cur.execute("""
             SELECT COALESCE(
                 MAX(
-                    CAST(
-                        SUBSTRING(dispute_case FROM '[0-9]+') AS INTEGER
-                    )
+                    CAST(SUBSTRING(dispute_case FROM '[0-9]+') AS INTEGER)
                 ),
                 0
             ) AS last_num
             FROM disputa
         """)
+        dispute_case = f"DISP-{cur.fetchone()['last_num'] + 1:04d}"
 
-        last_num = cur.fetchone()["last_num"]
-        dispute_case = f"DISP-{last_num + 1:04d}"
-
-        # ====================================================
-        # 2️⃣ Obtener datos desde Collections (fuente de verdad)
-        # ====================================================
+        # ================================
+        # 2️⃣ Fuente de verdad: collections
+        # ================================
         cur.execute("""
             SELECT
                 fecha_emision,
@@ -475,31 +483,15 @@ def crear_disputa(payload: dict, conn=Depends(get_db)):
             FROM collections
             WHERE numero_documento = %s
             LIMIT 1
-        """, (payload["numero_documento"],))
-
+        """, (numero_documento,))
         base = cur.fetchone()
 
         if not base:
-            raise HTTPException(
-                status_code=404,
-                detail="Factura no encontrada en Collections"
-            )
+            raise HTTPException(404, "Factura no encontrada en Collections")
 
-        if not base["fecha_emision"] or not base["fecha_vencimiento"]:
-            raise HTTPException(
-                status_code=400,
-                detail="La factura no tiene fechas válidas para disputar"
-            )
-
-        if base["total"] is None:
-            raise HTTPException(
-                status_code=400,
-                detail="La factura no tiene monto válido"
-            )
-
-        # ====================================================
-        # 3️⃣ Insertar disputa (CREATED_AT FIX)
-        # ====================================================
+        # ================================
+        # 3️⃣ INSERT limpio (SIN payload basura)
+        # ================================
         cur.execute("""
             INSERT INTO disputa (
                 dispute_case,
@@ -517,54 +509,38 @@ def crear_disputa(payload: dict, conn=Depends(get_db)):
                 descripcion_servicio,
                 created_at
             ) VALUES (
-                %(dispute_case)s,
-                %(numero_documento)s,
-                %(codigo_cliente)s,
-                %(nombre_cliente)s,
-                %(fecha_factura)s,
-                %(fecha_vencimiento)s,
-                %(monto)s,
-                %(motivo)s,
-                %(comentario)s,
-                %(buque_contenedor)s,
-                %(operacion)s,
-                %(periodo_operacion)s,
-                %(descripcion_servicio)s,
-                NOW()
+                %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, NOW()
             )
-        """, {
-            "dispute_case": dispute_case,
-            "numero_documento": payload["numero_documento"],
-            "codigo_cliente": payload["codigo_cliente"],
-            "nombre_cliente": payload["nombre_cliente"],
-            "fecha_factura": base["fecha_emision"],
-            "fecha_vencimiento": base["fecha_vencimiento"],
-            "monto": base["total"],
-            "motivo": payload["motivo"],
-            "comentario": payload["comentario"],
-            "buque_contenedor": base["buque_contenedor"],
-            "operacion": base["operacion"],
-            "periodo_operacion": base["periodo_operacion"],
-            "descripcion_servicio": base["descripcion_servicio"]
-        })
+        """, (
+            dispute_case,
+            numero_documento,
+            codigo_cliente,
+            nombre_cliente,
+            base["fecha_emision"],
+            base["fecha_vencimiento"],
+            base["total"],
+            motivo,
+            comentario,
+            base["buque_contenedor"],
+            base["operacion"],
+            base["periodo_operacion"],
+            base["descripcion_servicio"]
+        ))
 
-        # ====================================================
-        # 4️⃣ Marcar factura como disputada
-        # ====================================================
+        # ================================
+        # 4️⃣ Marcar disputada
+        # ================================
         cur.execute("""
             UPDATE collections
-            SET
-                disputada = TRUE,
+            SET disputada = TRUE,
                 estado_factura = 'DISPUTADA'
             WHERE numero_documento = %s
-        """, (payload["numero_documento"],))
+        """, (numero_documento,))
 
         conn.commit()
 
-        return {
-            "status": "ok",
-            "dispute_case": dispute_case
-        }
+        return {"status": "ok", "dispute_case": dispute_case}
 
     except HTTPException:
         if conn:
@@ -574,14 +550,12 @@ def crear_disputa(payload: dict, conn=Depends(get_db)):
     except Exception as e:
         if conn:
             conn.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error creando disputa: {str(e)}"
-        )
+        raise HTTPException(500, f"Error creando disputa: {repr(e)}")
 
     finally:
         if cur:
             cur.close()
+
 
 
 # ============================================================

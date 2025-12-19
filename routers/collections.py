@@ -429,10 +429,12 @@ def search_collections(
         "data": data
     }
 
-
-@router.post("/collections/disputa")
+# ============================================================
+# POST /collections/disputa
+# Crear una disputa de factura
+# ============================================================
+@router.post("/disputa")
 def crear_disputa(payload: dict, conn=Depends(get_db)):
-
     cur = None
 
     try:

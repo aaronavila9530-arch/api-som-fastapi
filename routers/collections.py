@@ -443,22 +443,22 @@ def crear_disputa(payload: dict, conn=Depends(get_db)):
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
         # ====================================================
-        # 1️⃣ Generar dispute_case secuencial
+        # 1️⃣ Generar dispute_case secuencial (ROBUSTO)
         # ====================================================
         cur.execute("""
-            SELECT dispute_case
+            SELECT COALESCE(
+                MAX(
+                    CAST(
+                        SUBSTRING(dispute_case FROM '[0-9]+') AS INTEGER
+                    )
+                ),
+                0
+            ) AS last_num
             FROM disputa
-            ORDER BY id DESC
-            LIMIT 1
         """)
 
-        last = cur.fetchone()
-        if last and last.get("dispute_case"):
-            num = int(last["dispute_case"].replace("DISP-", ""))
-        else:
-            num = 0
-
-        dispute_case = f"DISP-{num + 1:04d}"
+        last_num = cur.fetchone()["last_num"]
+        dispute_case = f"DISP-{last_num + 1:04d}"
 
         # ====================================================
         # 2️⃣ Obtener datos desde Collections (fuente de verdad)

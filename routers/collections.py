@@ -47,7 +47,7 @@ def sync_collections(
     ),
     solo_pendientes: bool = Query(
         True,
-        description="Si True, solo sincroniza facturas con estado != PAGADA (según invoicing/collections)."
+        description="Si True, solo sincroniza facturas con estado != PAGADA (según invoicing)."
     ),
     conn=Depends(get_db)
 ):
@@ -57,7 +57,10 @@ def sync_collections(
     - Si cliente = ALL o None -> procesa todas.
     - Si cliente se envía -> filtra por coincidencia exacta/ILIKE en codigo_cliente o nombre_cliente.
     - Calcula vencimiento y aging en el servidor.
-    - No pisa disputada/estado_factura si ya existían (mantiene gestión de cobro).
+    - No pisa disputada.
+    - No pisa saldo_pendiente si ya hubo aplicaciones (pagos/NC).
+    - Si no hay aplicaciones (saldo_pendiente == total anterior), ajusta saldo al nuevo total.
+    - Nunca deja saldo_pendiente NULL.
     """
 
     if not conn:
@@ -74,7 +77,6 @@ def sync_collections(
         # Filtro cliente
         # ---------------------------
         if cliente and cliente.upper() != "ALL":
-            # Puede venir como código o nombre
             filtros.append("(i.codigo_cliente = %(cliente_exact)s OR i.nombre_cliente ILIKE %(cliente_like)s)")
             params["cliente_exact"] = cliente.strip()
             params["cliente_like"] = f"%{cliente.strip()}%"
@@ -90,7 +92,6 @@ def sync_collections(
         # ---------------------------
         # Traer facturas desde invoicing
         # ---------------------------
-        # Nota: Aquí leemos también las nuevas columnas snapshot si existen.
         cur.execute(
             f"""
             SELECT
@@ -104,7 +105,6 @@ def sync_collections(
                 i.total,
                 i.estado,
 
-                -- snapshots (pueden existir o no según tu ALTER TABLE)
                 i.num_informe,
                 i.termino_pago,
                 i.buque_contenedor,
@@ -127,12 +127,8 @@ def sync_collections(
             }
 
         hoy = date.today()
-
         synced = 0
 
-        # ---------------------------
-        # Upsert por numero_documento
-        # ---------------------------
         for f in facturas:
             numero = str(f.get("numero_documento", "")).strip()
             if not numero:
@@ -140,6 +136,12 @@ def sync_collections(
 
             codigo_cliente = (f.get("codigo_cliente") or "").strip()
             nombre_cliente = (f.get("nombre_cliente") or "").strip()
+
+            # ---------- total robusto ----------
+            try:
+                total_nuevo = float(f.get("total") or 0)
+            except Exception:
+                total_nuevo = 0.0
 
             # 1) Obtener días de crédito desde cliente_credito (si existe)
             cur.execute("""
@@ -151,7 +153,6 @@ def sync_collections(
             cc = cur.fetchone() or {}
             dias_credito = cc.get("termino_pago")
 
-            # fallback a lo que venga en invoicing (termino_pago)
             if dias_credito is None:
                 dias_credito = f.get("termino_pago")
 
@@ -159,7 +160,6 @@ def sync_collections(
 
             # 2) Fechas
             fecha_emision = f.get("fecha_emision")
-            # Si viene como string 'YYYY-MM-DD' convertir a date
             if isinstance(fecha_emision, str):
                 try:
                     fecha_emision = date.fromisoformat(fecha_emision)
@@ -167,8 +167,6 @@ def sync_collections(
                     fecha_emision = None
 
             if not fecha_emision:
-                # Si falta fecha_emision no podemos calcular vencimiento
-                # Igual podemos insertar algo mínimo
                 fecha_venc = None
                 aging = 0
                 bucket = "CURRENT"
@@ -177,29 +175,67 @@ def sync_collections(
                 aging = (hoy - fecha_venc).days
                 bucket = _bucket_aging(aging)
 
-            # 3) Mantener disputada/estado_factura si ya existe
+            # 3) Ver si existe en collections (y traer saldo/total previo)
             cur.execute("""
-                SELECT estado_factura, disputada
+                SELECT
+                    estado_factura,
+                    disputada,
+                    saldo_pendiente,
+                    total
                 FROM collections
                 WHERE numero_documento = %s
                 LIMIT 1
             """, (numero,))
             existente = cur.fetchone()
 
-            if existente:
-                estado_factura = existente.get("estado_factura") or f.get("estado") or "PENDIENTE_PAGO"
-                disputada = bool(existente.get("disputada"))
-            else:
-                # Estado inicial: si invoicing trae estado, úsalo; si no, PENDIENTE_PAGO
-                estado_invoicing = (f.get("estado") or "").strip().upper()
-                if estado_invoicing == "PAGADA":
-                    estado_factura = "PAGADA"
-                else:
-                    estado_factura = "PENDIENTE_PAGO"
-                disputada = False
+            estado_invoicing = (f.get("estado") or "").strip().upper()
 
-            # 4) Upsert
             if existente:
+                disputada = bool(existente.get("disputada"))
+                estado_factura_actual = (existente.get("estado_factura") or "").strip().upper()
+                total_anterior = existente.get("total")
+                saldo_actual = existente.get("saldo_pendiente")
+
+                try:
+                    total_anterior = float(total_anterior or 0)
+                except Exception:
+                    total_anterior = 0.0
+
+                # saldo puede venir NULL o "None"
+                try:
+                    if saldo_actual in (None, "", "None"):
+                        saldo_actual_num = None
+                    else:
+                        saldo_actual_num = float(saldo_actual)
+                except Exception:
+                    saldo_actual_num = None
+
+                # --------- Determinar saldo final (NO PISAR APLICACIONES) ----------
+                # Caso A: saldo NULL -> inicializar a total nuevo
+                if saldo_actual_num is None:
+                    saldo_final = total_nuevo
+                else:
+                    # Caso B: si no hay aplicaciones (saldo == total_anterior), entonces ajustar al total nuevo
+                    # Caso C: si hubo aplicaciones (saldo != total_anterior), NO tocar saldo
+                    if abs(saldo_actual_num - total_anterior) < 0.0001:
+                        saldo_final = total_nuevo
+                    else:
+                        saldo_final = saldo_actual_num
+
+                # --------- Determinar estado_factura final ----------
+                # No pisar gestión: si ya está DISPUTADA/WRITE_OFF, mantener.
+                # Si ya está PAGADA, mantener.
+                # Si no está en esos estados, y saldo_final == 0 -> PAGADA; else PENDIENTE_PAGO.
+                if estado_factura_actual in ("DISPUTADA", "WRITE_OFF", "PAGADA"):
+                    estado_factura_final = estado_factura_actual
+                else:
+                    estado_factura_final = "PAGADA" if saldo_final <= 0 else "PENDIENTE_PAGO"
+
+                # Si invoicing dice PAGADA y NO hay saldo (o no hubo apps), respetar pagada
+                if estado_invoicing == "PAGADA" and saldo_final <= 0:
+                    estado_factura_final = "PAGADA"
+
+                # 4) UPDATE
                 cur.execute("""
                     UPDATE collections
                     SET
@@ -211,6 +247,7 @@ def sync_collections(
                         fecha_vencimiento = %s,
                         moneda = %s,
                         total = %s,
+                        saldo_pendiente = %s,
                         dias_credito = %s,
                         aging_dias = %s,
                         bucket_aging = %s,
@@ -229,7 +266,8 @@ def sync_collections(
                     fecha_emision,
                     fecha_venc,
                     f.get("moneda"),
-                    f.get("total"),
+                    total_nuevo,
+                    saldo_final,
                     dias_credito,
                     aging,
                     bucket,
@@ -238,10 +276,21 @@ def sync_collections(
                     f.get("operacion"),
                     f.get("periodo_operacion"),
                     f.get("descripcion_servicio"),
-                    estado_factura,
+                    estado_factura_final,
                     numero
                 ))
+
             else:
+                # --------- Nuevo registro ----------
+                disputada = False
+
+                if estado_invoicing == "PAGADA":
+                    estado_factura = "PAGADA"
+                    saldo_inicial = 0.0
+                else:
+                    estado_factura = "PENDIENTE_PAGO"
+                    saldo_inicial = total_nuevo
+
                 cur.execute("""
                     INSERT INTO collections (
                         numero_documento,
@@ -253,6 +302,7 @@ def sync_collections(
                         fecha_vencimiento,
                         moneda,
                         total,
+                        saldo_pendiente,
                         dias_credito,
                         aging_dias,
                         bucket_aging,
@@ -265,6 +315,7 @@ def sync_collections(
                         disputada
                     ) VALUES (
                         %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s
                     )
@@ -277,7 +328,8 @@ def sync_collections(
                     fecha_emision,
                     fecha_venc,
                     f.get("moneda"),
-                    f.get("total"),
+                    total_nuevo,
+                    saldo_inicial,
                     dias_credito,
                     aging,
                     bucket,
@@ -309,7 +361,6 @@ def sync_collections(
     finally:
         if cur:
             cur.close()
-
 
 # ============================================================
 # GET /collections/search

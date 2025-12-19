@@ -436,16 +436,6 @@ def search_collections(
 # ============================================================
 @router.post("/disputa")
 def crear_disputa(payload: dict, conn=Depends(get_db)):
-    """
-    payload esperado (desde UI):
-    {
-        numero_documento,
-        codigo_cliente,
-        nombre_cliente,
-        motivo,
-        comentario
-    }
-    """
 
     cur = None
 
@@ -471,7 +461,7 @@ def crear_disputa(payload: dict, conn=Depends(get_db)):
         dispute_case = f"DISP-{num + 1:04d}"
 
         # ====================================================
-        # 2️⃣ OBTENER DATOS REALES DESDE COLLECTIONS
+        # 2️⃣ Obtener datos desde Collections (fuente de verdad)
         # ====================================================
         cur.execute("""
             SELECT
@@ -493,6 +483,18 @@ def crear_disputa(payload: dict, conn=Depends(get_db)):
             raise HTTPException(
                 status_code=404,
                 detail="Factura no encontrada en Collections"
+            )
+
+        if not base["fecha_emision"] or not base["fecha_vencimiento"]:
+            raise HTTPException(
+                status_code=400,
+                detail="La factura no tiene fechas válidas para disputar"
+            )
+
+        if base["total"] is None:
+            raise HTTPException(
+                status_code=400,
+                detail="La factura no tiene monto válido"
             )
 
         # ====================================================
@@ -545,7 +547,7 @@ def crear_disputa(payload: dict, conn=Depends(get_db)):
         })
 
         # ====================================================
-        # 4️⃣ Marcar factura como disputada en collections
+        # 4️⃣ Marcar factura como disputada
         # ====================================================
         cur.execute("""
             UPDATE collections
@@ -561,6 +563,11 @@ def crear_disputa(payload: dict, conn=Depends(get_db)):
             "status": "ok",
             "dispute_case": dispute_case
         }
+
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
 
     except Exception as e:
         if conn:

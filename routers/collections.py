@@ -142,16 +142,14 @@ def sync_collections(
             nombre_cliente = (f.get("nombre_cliente") or "").strip()
 
             # 1) Obtener días de crédito desde cliente_credito (si existe)
-            dias_credito = None
-            if codigo_cliente:
-                cur.execute("""
-                    SELECT terminos_pago, limite_crediticio
-                    FROM cliente_credito
-                    WHERE codigo_cliente = %s
-                    LIMIT 1
-                """, (codigo_cliente,))
-                cc = cur.fetchone() or {}
-                dias_credito = cc.get("terminos_pago")
+            cur.execute("""
+                SELECT termino_pago, limite_credito
+                FROM cliente_credito
+                WHERE codigo_cliente = %s
+                LIMIT 1
+            """, (codigo_cliente,))
+            cc = cur.fetchone() or {}
+            dias_credito = cc.get("termino_pago")
 
             # fallback a lo que venga en invoicing (termino_pago)
             if dias_credito is None:

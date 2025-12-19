@@ -498,7 +498,7 @@ def crear_disputa(payload: dict, conn=Depends(get_db)):
             )
 
         # ====================================================
-        # 3️⃣ Insertar disputa
+        # 3️⃣ Insertar disputa (CREATED_AT FIX)
         # ====================================================
         cur.execute("""
             INSERT INTO disputa (
@@ -514,7 +514,8 @@ def crear_disputa(payload: dict, conn=Depends(get_db)):
                 buque_contenedor,
                 operacion,
                 periodo_operacion,
-                descripcion_servicio
+                descripcion_servicio,
+                created_at
             ) VALUES (
                 %(dispute_case)s,
                 %(numero_documento)s,
@@ -528,7 +529,8 @@ def crear_disputa(payload: dict, conn=Depends(get_db)):
                 %(buque_contenedor)s,
                 %(operacion)s,
                 %(periodo_operacion)s,
-                %(descripcion_servicio)s
+                %(descripcion_servicio)s,
+                NOW()
             )
         """, {
             "dispute_case": dispute_case,

@@ -397,6 +397,7 @@ def search_collections(
             bucket_aging,
             moneda,
             total,
+            saldo_pendiente,
             num_informe,
             buque_contenedor,
             operacion,
@@ -562,38 +563,68 @@ def crear_disputa(payload: dict, conn=Depends(get_db)):
 
 # ============================================================
 # POST /collections/pago
-# Aplicar pago o nota de crédito a una factura
+# Aplicar pago o nota de crédito (parcial o total)
 # ============================================================
 @router.post("/pago")
 def aplicar_pago(payload: dict, conn=Depends(get_db)):
-    """
-    payload esperado:
-    {
-        numero_documento,
-        codigo_cliente,
-        nombre_cliente,
-        tipo_aplicacion,   # PAGO | NOTA_CREDITO
-        banco,
-        fecha_pago,
-        comision,
-        referencia,
-        monto_pagado
-    }
-    """
 
     cur = None
 
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
 
-        # ================= VALIDACIONES =================
-        if payload["tipo_aplicacion"] not in ("PAGO", "NOTA_CREDITO"):
+        # ================================
+        # VALIDAR PAYLOAD MÍNIMO (BLINDADO)
+        # ================================
+        numero_documento = str(payload.get("numero_documento") or "").strip()
+        codigo_cliente = str(payload.get("codigo_cliente") or "").strip()
+        nombre_cliente = str(payload.get("nombre_cliente") or "").strip()
+        tipo_aplicacion = str(payload.get("tipo_aplicacion") or "").strip().upper()
+        banco = str(payload.get("banco") or "").strip()
+        referencia = str(payload.get("referencia") or "").strip()
+
+        try:
+            monto_pagado = float(payload.get("monto_pagado", 0))
+        except Exception:
+            monto_pagado = 0
+
+        comision = payload.get("comision") or 0
+        fecha_pago = payload.get("fecha_pago")
+
+        if not numero_documento:
+            raise HTTPException(400, "numero_documento es requerido")
+
+        if tipo_aplicacion not in ("PAGO", "NOTA_CREDITO"):
             raise HTTPException(400, "Tipo de aplicación inválido")
 
-        if float(payload["monto_pagado"]) <= 0:
+        if monto_pagado <= 0:
             raise HTTPException(400, "El monto debe ser mayor a cero")
 
-        # ================= INSERT CASH APP =================
+        # ================================
+        # OBTENER SALDO ACTUAL (LOCK)
+        # ================================
+        cur.execute("""
+            SELECT saldo_pendiente
+            FROM collections
+            WHERE numero_documento = %s
+            FOR UPDATE
+        """, (numero_documento,))
+
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(404, "Factura no encontrada en Collections")
+
+        saldo_actual = float(row["saldo_pendiente"] or 0)
+
+        if monto_pagado > saldo_actual:
+            raise HTTPException(
+                400,
+                f"El monto aplicado ({monto_pagado}) excede el saldo pendiente ({saldo_actual})"
+            )
+
+        # ================================
+        # INSERT CASH APP (LEDGER)
+        # ================================
         cur.execute("""
             INSERT INTO cash_app (
                 numero_documento,
@@ -604,44 +635,58 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
                 comision,
                 referencia,
                 monto_pagado,
-                tipo_aplicacion
+                tipo_aplicacion,
+                created_at
             ) VALUES (
-                %(numero_documento)s,
-                %(codigo_cliente)s,
-                %(nombre_cliente)s,
-                %(banco)s,
-                %(fecha_pago)s,
-                %(comision)s,
-                %(referencia)s,
-                %(monto_pagado)s,
-                %(tipo_aplicacion)s
+                %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, NOW()
             )
-        """, {
-            "numero_documento": payload["numero_documento"],
-            "codigo_cliente": payload["codigo_cliente"],
-            "nombre_cliente": payload["nombre_cliente"],
-            "banco": payload["banco"],
-            "fecha_pago": payload["fecha_pago"],
-            "comision": payload.get("comision", 0),
-            "referencia": payload.get("referencia"),
-            "monto_pagado": payload["monto_pagado"],
-            "tipo_aplicacion": payload["tipo_aplicacion"]
-        })
+        """, (
+            numero_documento,
+            codigo_cliente,
+            nombre_cliente,
+            banco,
+            fecha_pago,
+            comision,
+            referencia,
+            monto_pagado,
+            tipo_aplicacion
+        ))
 
-        # ================= ACTUALIZAR COLLECTIONS =================
-        # En esta versión: pago completo = PAGADA
-        # (parciales se pueden extender luego)
+        # ================================
+        # CALCULAR NUEVO SALDO
+        # ================================
+        nuevo_saldo = saldo_actual - monto_pagado
+
+        if nuevo_saldo <= 0:
+            nuevo_saldo = 0
+            estado = "PAGADA"
+        else:
+            estado = "PENDIENTE_PAGO"
+
+        # ================================
+        # ACTUALIZAR COLLECTIONS
+        # ================================
         cur.execute("""
             UPDATE collections
-            SET estado_factura = 'PAGADA'
+            SET
+                saldo_pendiente = %s,
+                estado_factura = %s
             WHERE numero_documento = %s
-        """, (payload["numero_documento"],))
+        """, (
+            nuevo_saldo,
+            estado,
+            numero_documento
+        ))
 
         conn.commit()
 
         return {
             "status": "ok",
-            "message": f"{payload['tipo_aplicacion']} aplicado correctamente"
+            "message": f"{tipo_aplicacion} aplicado correctamente",
+            "saldo_anterior": saldo_actual,
+            "saldo_actual": nuevo_saldo,
+            "estado_factura": estado
         }
 
     except HTTPException:
@@ -654,7 +699,7 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
             conn.rollback()
         raise HTTPException(
             status_code=500,
-            detail=f"Error aplicando pago: {str(e)}"
+            detail=f"Error aplicando pago: {repr(e)}"
         )
 
     finally:

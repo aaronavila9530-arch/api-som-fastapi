@@ -437,20 +437,13 @@ def search_collections(
 @router.post("/disputa")
 def crear_disputa(payload: dict, conn=Depends(get_db)):
     """
-    payload esperado:
+    payload esperado (desde UI):
     {
         numero_documento,
         codigo_cliente,
         nombre_cliente,
-        fecha_factura,
-        fecha_vencimiento,
-        monto,
         motivo,
-        comentario,
-        buque_contenedor,
-        operacion,
-        periodo_operacion,
-        descripcion_servicio
+        comentario
     }
     """
 
@@ -478,7 +471,32 @@ def crear_disputa(payload: dict, conn=Depends(get_db)):
         dispute_case = f"DISP-{num + 1:04d}"
 
         # ====================================================
-        # 2️⃣ Insertar disputa
+        # 2️⃣ OBTENER DATOS REALES DESDE COLLECTIONS
+        # ====================================================
+        cur.execute("""
+            SELECT
+                fecha_emision,
+                fecha_vencimiento,
+                total,
+                buque_contenedor,
+                operacion,
+                periodo_operacion,
+                descripcion_servicio
+            FROM collections
+            WHERE numero_documento = %s
+            LIMIT 1
+        """, (payload["numero_documento"],))
+
+        base = cur.fetchone()
+
+        if not base:
+            raise HTTPException(
+                status_code=404,
+                detail="Factura no encontrada en Collections"
+            )
+
+        # ====================================================
+        # 3️⃣ Insertar disputa
         # ====================================================
         cur.execute("""
             INSERT INTO disputa (
@@ -515,19 +533,19 @@ def crear_disputa(payload: dict, conn=Depends(get_db)):
             "numero_documento": payload["numero_documento"],
             "codigo_cliente": payload["codigo_cliente"],
             "nombre_cliente": payload["nombre_cliente"],
-            "fecha_factura": payload["fecha_factura"],
-            "fecha_vencimiento": payload["fecha_vencimiento"],
-            "monto": payload["monto"],
+            "fecha_factura": base["fecha_emision"],
+            "fecha_vencimiento": base["fecha_vencimiento"],
+            "monto": base["total"],
             "motivo": payload["motivo"],
             "comentario": payload["comentario"],
-            "buque_contenedor": payload.get("buque_contenedor"),
-            "operacion": payload.get("operacion"),
-            "periodo_operacion": payload.get("periodo_operacion"),
-            "descripcion_servicio": payload.get("descripcion_servicio")
+            "buque_contenedor": base["buque_contenedor"],
+            "operacion": base["operacion"],
+            "periodo_operacion": base["periodo_operacion"],
+            "descripcion_servicio": base["descripcion_servicio"]
         })
 
         # ====================================================
-        # 3️⃣ Marcar factura como disputada en collections
+        # 4️⃣ Marcar factura como disputada en collections
         # ====================================================
         cur.execute("""
             UPDATE collections

@@ -214,3 +214,70 @@ def get_kpis(conn=Depends(get_db)):
         "IncomingVolume": incoming,
         "DisputedAmount": float(amount or 0)
     }
+
+# ============================================================
+# POST /dispute-management/from-dispute/{dispute_id}
+# Crear u obtener gestión desde disputa
+# ============================================================
+
+@router.post("/from-dispute/{dispute_id}")
+def create_or_get_management_from_dispute(
+    dispute_id: int,
+    conn=Depends(get_db)
+):
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # 1️⃣ Verificar que la disputa exista
+    cur.execute(
+        "SELECT * FROM disputa WHERE id = %s",
+        (dispute_id,)
+    )
+    disputa = cur.fetchone()
+
+    if not disputa:
+        raise HTTPException(
+            status_code=404,
+            detail="Disputa no encontrada"
+        )
+
+    # 2️⃣ Verificar si ya existe gestión
+    cur.execute(
+        """
+        SELECT id, status
+        FROM dispute_management
+        WHERE dispute_id = %s
+        """,
+        (dispute_id,)
+    )
+    management = cur.fetchone()
+
+    # 3️⃣ Si NO existe, crearla
+    if not management:
+        cur.execute(
+            """
+            INSERT INTO dispute_management (
+                dispute_id,
+                status,
+                created_at
+            )
+            VALUES (%s, %s, NOW())
+            RETURNING id
+            """,
+            (dispute_id, "New")
+        )
+        management_id = cur.fetchone()["id"]
+        conn.commit()
+
+        return {
+            "management_id": management_id,
+            "status": "New",
+            "created": True
+        }
+
+    # 4️⃣ Si ya existe
+    return {
+        "management_id": management["id"],
+        "status": management["status"],
+        "created": False
+    }
+

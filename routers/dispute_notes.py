@@ -1,12 +1,12 @@
 # ============================================================
 # Dispute Notes API (NC/ND) - ERP-SOM
-# NC/ND solo se crean si hay una disputa de por medio
 # ============================================================
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from psycopg2.extras import RealDictCursor
-from datetime import datetime
-from typing import Optional
+from psycopg2 import sql
+from datetime import datetime, date
+from typing import Optional, Dict, Any
 import xml.etree.ElementTree as ET
 
 from database import get_db
@@ -16,33 +16,36 @@ router = APIRouter(
     tags=["Disputes - Notes (NC/ND)"]
 )
 
-# -----------------------------
-# Helpers de negocio
-# -----------------------------
+# ============================================================
+# Helpers
+# ============================================================
 
 def _calc_new_disputed_amount(old_amount: float, tipo: str, monto: float) -> float:
-    if tipo == "NC":
-        return old_amount - monto
-    if tipo == "ND":
-        return old_amount + monto
-    raise ValueError("Tipo inválido")
+    return old_amount - monto if tipo == "NC" else old_amount + monto
+
+
+def _ensure_disputed_amount(cur, management_id: int, monto_original: float):
+    """
+    Garantiza que disputed_amount nunca sea NULL
+    """
+    cur.execute("""
+        UPDATE dispute_management
+        SET disputed_amount = COALESCE(disputed_amount, %s)
+        WHERE id = %s
+    """, (monto_original, management_id))
 
 
 def _close_if_zero(cur, management_id: int, new_amount: float):
-    """
-    Si el monto llega a 0 -> status Resolved y fecha de cierre.
-    """
     if new_amount <= 0:
-        new_amount = 0.0
         cur.execute("""
             UPDATE dispute_management
-            SET disputed_amount = %s,
+            SET disputed_amount = 0,
                 status = 'Resolved',
                 dispute_closed_at = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
-        """, (new_amount, datetime.now(), management_id))
-        return new_amount, "Resolved"
+        """, (datetime.now(), management_id))
+        return 0.0, True
 
     cur.execute("""
         UPDATE dispute_management
@@ -50,267 +53,168 @@ def _close_if_zero(cur, management_id: int, new_amount: float):
             updated_at = CURRENT_TIMESTAMP
         WHERE id = %s
     """, (new_amount, management_id))
-    return new_amount, None
+    return new_amount, False
 
 
-def _insert_history(cur, management_id: int, comentario: str, created_by: str):
+def _insert_history(cur, management_id: int, comentario: str, user: str):
     cur.execute("""
         INSERT INTO dispute_history (dispute_management_id, comentario, created_by)
         VALUES (%s, %s, %s)
-    """, (management_id, comentario, created_by))
+    """, (management_id, comentario, user))
 
 
-def _get_dispute_context(cur, management_id: int):
-    """
-    Trae datos de disputa + management para referenciar en Billing
-    """
+def _get_context(cur, management_id: int):
     cur.execute("""
         SELECT
-            dm.id AS management_id,
+            dm.id,
             dm.disputed_amount,
-            dm.status,
-            dm.dispute_id,
+            d.monto AS monto_original,
             d.dispute_case,
             d.numero_documento,
             d.codigo_cliente,
-            d.nombre_cliente,
-            d.monto AS monto_original,
-            d.created_at AS dispute_created_at
+            d.nombre_cliente
         FROM dispute_management dm
         JOIN disputa d ON d.id = dm.dispute_id
         WHERE dm.id = %s
     """, (management_id,))
     row = cur.fetchone()
     if not row:
-        raise HTTPException(status_code=404, detail="Disputa no encontrada")
+        raise HTTPException(404, "Disputa no encontrada")
     return row
 
 
 # ============================================================
-# PUNTO CRÍTICO: creación en Billing (ajusta a tu tabla real)
+# Billing inserter (SEGURIDAD REAL)
 # ============================================================
 
-def _crear_en_billing(cur, *, tipo: str, monto: float, moneda: str,
-                     dispute_case: str, numero_documento: str,
-                     codigo_cliente: str, nombre_cliente: str,
-                     source: str, xml_raw: Optional[str] = None) -> int:
-    """
-    IMPORTANTE:
-    - Aquí debes alinear el INSERT a tu tabla real de Billing.
-    - Esta implementación es un "template" seguro:
-      1) Deja la referencia de la NC/ND al dispute_case
-      2) Deja la referencia al documento disputado
-      3) Guarda el monto/moneda
-      4) (Opcional) guarda el XML si decides tener un campo
-    """
-
-    # ========= EJEMPLO GENERICO =========
-    # Si tu tabla billing NO tiene estas columnas, AJUSTA este INSERT.
-    # La idea es que Billing muestre este registro en su tabla.
-
+def _find_billing_table(cur):
     cur.execute("""
-        INSERT INTO billing (
-            tipo_factura,
-            tipo_documento,
-            numero,
-            cliente,
-            fecha,
-            moneda,
-            total,
-            estado,
-            referencia_externa,
-            comentario
-        )
-        VALUES (%s, %s, %s, %s, CURRENT_DATE, %s, %s, %s, %s, %s)
-        RETURNING id
-    """, (
-        tipo,                      # tipo_factura (NC/ND)
-        tipo,                      # tipo_documento
-        dispute_case,              # numero (para rastreo)
-        nombre_cliente,            # cliente
-        moneda,                    # moneda
-        monto,                     # total
-        "CREATED",                 # estado
-        numero_documento,          # referencia_externa: documento disputado
-        f"{source} | Dispute Case {dispute_case} | Doc {numero_documento}"
-    ))
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema='public'
+    """)
+    tables = {r["table_name"] for r in cur.fetchall()}
+    for t in ("factura", "facturas", "billing_factura", "billing_facturas"):
+        if t in tables:
+            return t
+    raise HTTPException(500, "No se encontró tabla de Billing")
 
+
+def _get_columns(cur, table):
+    cur.execute("""
+        SELECT column_name, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_schema='public' AND table_name=%s
+    """, (table,))
+    return {c["column_name"]: c for c in cur.fetchall()}
+
+
+def _crear_en_billing(cur, *, tipo, monto, moneda,
+                      dispute_case, numero_documento,
+                      codigo_cliente, nombre_cliente, source):
+
+    table = _find_billing_table(cur)
+    cols = _get_columns(cur, table)
+
+    values = {
+        "tipo": tipo,
+        "tipo_factura": tipo,
+        "numero": dispute_case,
+        "numero_documento": dispute_case,
+        "cliente": nombre_cliente,
+        "codigo_cliente": codigo_cliente,
+        "moneda": moneda,
+        "total": monto,
+        "monto": monto,
+        "estado": "CREATED",
+        "status": "CREATED",
+        "fecha": date.today(),
+        "created_at": datetime.now(),
+        "comentario": f"{source} | Dispute {dispute_case} | Doc {numero_documento}"
+    }
+
+    insert_cols = []
+    insert_vals = []
+
+    for c, meta in cols.items():
+        if c in values:
+            insert_cols.append(c)
+            insert_vals.append(values[c])
+        elif meta["is_nullable"] == "YES" or meta["column_default"] is not None:
+            continue
+
+    if not insert_cols:
+        raise HTTPException(500, "No hay columnas válidas para Billing")
+
+    q = sql.SQL("INSERT INTO {t} ({c}) VALUES ({v}) RETURNING id").format(
+        t=sql.Identifier(table),
+        c=sql.SQL(",").join(map(sql.Identifier, insert_cols)),
+        v=sql.SQL(",").join(sql.Placeholder() for _ in insert_cols)
+    )
+
+    cur.execute(q, insert_vals)
     return cur.fetchone()["id"]
 
 
 # ============================================================
-# POST /dispute-management/{management_id}/notes/manual
-# Crear NC/ND MANUAL desde Disputes (obligatorio dispute)
+# NC / ND MANUAL
 # ============================================================
 
 @router.post("/{management_id}/notes/manual")
 def create_note_manual(management_id: int, payload: dict, conn=Depends(get_db)):
-    """
-    payload:
-    {
-      "tipo": "NC" | "ND",
-      "monto": 123.45,
-      "moneda": "USD",
-      "comentario": "texto opcional",
-      "user": "Aaroncito"
-    }
-    """
 
     tipo = payload.get("tipo")
-    monto = payload.get("monto")
+    monto = float(payload.get("monto", 0))
     moneda = payload.get("moneda", "USD")
-    comentario_user = payload.get("comentario", "")
     user = payload.get("user", "system")
+    comentario = payload.get("comentario", "")
 
-    if tipo not in ("NC", "ND"):
-        raise HTTPException(400, "Tipo inválido (use NC o ND)")
-    if monto is None:
-        raise HTTPException(400, "Falta monto")
-    try:
-        monto = float(monto)
-    except Exception:
-        raise HTTPException(400, "Monto inválido")
-    if monto <= 0:
-        raise HTTPException(400, "Monto debe ser mayor a 0")
+    if tipo not in ("NC", "ND") or monto <= 0:
+        raise HTTPException(400, "Datos inválidos")
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    # Contexto disputa
-    ctx = _get_dispute_context(cur, management_id)
-
-    # 1) Crear en Billing (obligatorio)
-    billing_id = _crear_en_billing(
-        cur,
-        tipo=tipo,
-        monto=monto,
-        moneda=moneda,
-        dispute_case=ctx["dispute_case"],
-        numero_documento=ctx["numero_documento"],
-        codigo_cliente=ctx["codigo_cliente"],
-        nombre_cliente=ctx["nombre_cliente"],
-        source="DISPUTE-MANUAL"
-    )
-
-    # 2) Ajustar disputed_amount
-    new_amount = _calc_new_disputed_amount(float(ctx["disputed_amount"]), tipo, monto)
-
-    # 3) Cerrar si llega a 0
-    new_amount, resolved_status = _close_if_zero(cur, management_id, new_amount)
-
-    # 4) History
-    hist = f"{tipo} MANUAL creada (Billing ID {billing_id}) por {monto:.2f} {moneda}."
-    if comentario_user.strip():
-        hist += f" Comentario: {comentario_user.strip()}"
-    _insert_history(cur, management_id, hist, user)
-
-    conn.commit()
-
-    return {
-        "status": "ok",
-        "billing_id": billing_id,
-        "new_disputed_amount": float(new_amount),
-        "dispute_resolved": (resolved_status == "Resolved")
-    }
-
-
-# ============================================================
-# POST /dispute-management/{management_id}/notes/xml
-# Crear NC/ND ELECTRÓNICA (subir XML) desde Disputes
-# ============================================================
-
-@router.post("/{management_id}/notes/xml")
-async def create_note_from_xml(
-    management_id: int,
-    tipo: str,
-    moneda: str = "USD",
-    user: str = "system",
-    file: UploadFile = File(...),
-    conn=Depends(get_db)
-):
-    """
-    - tipo: NC | ND (se valida)
-    - file: XML de nota electrónica
-    - Se crea en Billing y se ajusta disputed_amount
-    """
-
-    if tipo not in ("NC", "ND"):
-        raise HTTPException(400, "Tipo inválido (use NC o ND)")
-
-    xml_bytes = await file.read()
     try:
-        xml_text = xml_bytes.decode("utf-8", errors="ignore")
-    except Exception:
-        xml_text = str(xml_bytes)
+        ctx = _get_context(cur, management_id)
 
-    # 1) Extraer monto del XML (best-effort, ajustable a tu XML real)
-    monto = None
-    try:
-        root = ET.fromstring(xml_text)
+        _ensure_disputed_amount(cur, management_id, ctx["monto_original"])
 
-        # Heurística: busca nodos que contengan Total / Monto / TotalComprobante
-        candidates = []
-        for el in root.iter():
-            tag = el.tag.lower()
-            if any(k in tag for k in ["total", "monto", "totalcomprobante", "importe"]):
-                if el.text:
-                    candidates.append(el.text.strip())
-
-        # Toma el último valor parseable
-        for v in reversed(candidates):
-            try:
-                monto = float(v.replace(",", ""))
-                if monto > 0:
-                    break
-            except Exception:
-                continue
-
-    except Exception:
-        pass
-
-    if monto is None:
-        raise HTTPException(
-            422,
-            "No se pudo extraer el monto del XML. Ajuste el parser a su estructura real."
+        billing_id = _crear_en_billing(
+            cur,
+            tipo=tipo,
+            monto=monto,
+            moneda=moneda,
+            dispute_case=ctx["dispute_case"],
+            numero_documento=ctx["numero_documento"],
+            codigo_cliente=ctx["codigo_cliente"],
+            nombre_cliente=ctx["nombre_cliente"],
+            source="DISPUTE-MANUAL"
         )
 
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    ctx = _get_dispute_context(cur, management_id)
+        new_amount = _calc_new_disputed_amount(
+            ctx["disputed_amount"] or ctx["monto_original"],
+            tipo,
+            monto
+        )
 
-    # 2) Crear en Billing (obligatorio)
-    billing_id = _crear_en_billing(
-        cur,
-        tipo=tipo,
-        monto=monto,
-        moneda=moneda,
-        dispute_case=ctx["dispute_case"],
-        numero_documento=ctx["numero_documento"],
-        codigo_cliente=ctx["codigo_cliente"],
-        nombre_cliente=ctx["nombre_cliente"],
-        source=f"DISPUTE-XML:{file.filename}",
-        xml_raw=xml_text  # si decides guardarlo, ajusta _crear_en_billing
-    )
+        new_amount, resolved = _close_if_zero(cur, management_id, new_amount)
 
-    # 3) Ajustar disputed_amount
-    new_amount = _calc_new_disputed_amount(float(ctx["disputed_amount"]), tipo, float(monto))
+        _insert_history(
+            cur,
+            management_id,
+            f"{tipo} manual creada (Billing {billing_id}). {comentario}",
+            user
+        )
 
-    # 4) Cerrar si llega a 0
-    new_amount, resolved_status = _close_if_zero(cur, management_id, new_amount)
+        conn.commit()
 
-    # 5) History
-    _insert_history(
-        cur,
-        management_id,
-        f"{tipo} XML creada (Billing ID {billing_id}) por {monto:.2f} {moneda}. File: {file.filename}",
-        user
-    )
+        return {
+            "status": "ok",
+            "billing_id": billing_id,
+            "new_disputed_amount": new_amount,
+            "resolved": resolved
+        }
 
-    conn.commit()
-
-    return {
-        "status": "ok",
-        "billing_id": billing_id,
-        "xml_filename": file.filename,
-        "extracted_amount": float(monto),
-        "new_disputed_amount": float(new_amount),
-        "dispute_resolved": (resolved_status == "Resolved")
-    }
+    except Exception:
+        conn.rollback()
+        raise

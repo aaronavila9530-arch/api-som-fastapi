@@ -5,7 +5,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg2.extras import RealDictCursor
 from typing import Optional
-from datetime import datetime, date
+from datetime import datetime
 
 from database import get_db
 
@@ -33,11 +33,11 @@ DISPUTE_STATUSES = [
 
 # ============================================================
 # GET /dispute-management
-# Listado paginado + filtro por cliente
+# LISTADO DE GESTIONES (SOLO LAS EXISTENTES)
 # ============================================================
 
 @router.get("")
-def list_disputes(
+def list_dispute_management(
     cliente: Optional[str] = Query(None),
     page: int = 1,
     page_size: int = 50,
@@ -55,16 +55,18 @@ def list_disputes(
 
     sql = f"""
         SELECT
-            dm.id AS management_id,
+            dm.id               AS management_id,
+            dm.status,
+            dm.disputed_amount,
+            dm.dispute_closed_at,
+            d.id                AS dispute_id,
             d.dispute_case,
             d.numero_documento,
             d.codigo_cliente,
             d.nombre_cliente,
             d.fecha_factura,
             d.fecha_vencimiento,
-            dm.disputed_amount,
-            dm.status,
-            dm.dispute_closed_at,
+            d.monto,
             d.created_at,
             (
                 SELECT comentario
@@ -90,8 +92,8 @@ def list_disputes(
     }
 
 # ============================================================
-# POST /dispute-management/{id}/status
-# Cambiar estatus + comentario
+# POST /dispute-management/{management_id}/status
+# CAMBIO DE ESTATUS + HISTORIAL
 # ============================================================
 
 @router.post("/{management_id}/status")
@@ -100,25 +102,15 @@ def update_status(
     payload: dict,
     conn=Depends(get_db)
 ):
-    """
-    payload:
-    {
-        status,
-        comentario,
-        user
-    }
-    """
-
     status = payload.get("status")
     comentario = payload.get("comentario")
-    user = payload.get("user", "system")
+    user = payload.get("user", "SYSTEM")
 
     if status not in DISPUTE_STATUSES:
         raise HTTPException(status_code=400, detail="Invalid status")
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    # Cierre automático
     closed_at = None
     if status == "Resolved":
         closed_at = datetime.now()
@@ -133,9 +125,8 @@ def update_status(
     """, (status, closed_at, management_id))
 
     if not cur.fetchone():
-        raise HTTPException(status_code=404, detail="Dispute not found")
+        raise HTTPException(status_code=404, detail="Dispute management not found")
 
-    # Insertar comentario en historial
     if comentario:
         cur.execute("""
             INSERT INTO dispute_history
@@ -147,7 +138,7 @@ def update_status(
     return {"status": "ok"}
 
 # ============================================================
-# GET /dispute-management/{id}/history
+# GET /dispute-management/{management_id}/history
 # ============================================================
 
 @router.get("/{management_id}/history")
@@ -167,7 +158,7 @@ def get_history(
     return cur.fetchall()
 
 # ============================================================
-# GET /dispute-management/kpis
+# GET /dispute-management/kpis/summary
 # ============================================================
 
 @router.get("/kpis/summary")
@@ -217,7 +208,7 @@ def get_kpis(conn=Depends(get_db)):
 
 # ============================================================
 # POST /dispute-management/from-dispute/{dispute_id}
-# Crear u obtener gestión desde disputa
+# CREA GESTIÓN DESDE DISPUTA (✔ FIX CRÍTICO)
 # ============================================================
 
 @router.post("/from-dispute/{dispute_id}")
@@ -227,57 +218,68 @@ def create_or_get_management_from_dispute(
 ):
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    # 1️⃣ Verificar que la disputa exista
-    cur.execute(
-        "SELECT * FROM disputa WHERE id = %s",
-        (dispute_id,)
-    )
+    # 1️⃣ Validar disputa
+    cur.execute("""
+        SELECT id, monto
+        FROM disputa
+        WHERE id = %s
+    """, (dispute_id,))
     disputa = cur.fetchone()
 
     if not disputa:
-        raise HTTPException(
-            status_code=404,
-            detail="Disputa no encontrada"
-        )
+        raise HTTPException(status_code=404, detail="Disputa no encontrada")
 
-    # 2️⃣ Verificar si ya existe gestión
-    cur.execute(
-        """
+    # 2️⃣ Ver si ya existe gestión
+    cur.execute("""
         SELECT id, status
         FROM dispute_management
         WHERE dispute_id = %s
-        """,
-        (dispute_id,)
-    )
+    """, (dispute_id,))
     management = cur.fetchone()
 
-    # 3️⃣ Si NO existe, crearla
-    if not management:
-        cur.execute(
-            """
-            INSERT INTO dispute_management (
-                dispute_id,
-                status,
-                created_at
-            )
-            VALUES (%s, %s, NOW())
-            RETURNING id
-            """,
-            (dispute_id, "New")
-        )
-        management_id = cur.fetchone()["id"]
-        conn.commit()
-
+    if management:
         return {
-            "management_id": management_id,
-            "status": "New",
-            "created": True
+            "management_id": management["id"],
+            "status": management["status"],
+            "created": False
         }
 
-    # 4️⃣ Si ya existe
-    return {
-        "management_id": management["id"],
-        "status": management["status"],
-        "created": False
-    }
+    # 3️⃣ CREAR gestión correctamente (✔ disputed_amount)
+    cur.execute("""
+        INSERT INTO dispute_management (
+            dispute_id,
+            status,
+            disputed_amount,
+            created_at
+        )
+        VALUES (%s, %s, %s, NOW())
+        RETURNING id
+    """, (
+        dispute_id,
+        "New",
+        disputa["monto"]
+    ))
 
+    management_id = cur.fetchone()["id"]
+
+    # 4️⃣ Crear historial inicial
+    cur.execute("""
+        INSERT INTO dispute_history (
+            dispute_management_id,
+            comentario,
+            created_by
+        )
+        VALUES (%s, %s, %s)
+    """, (
+        management_id,
+        "Gestión iniciada desde disputa",
+        "SYSTEM"
+    ))
+
+    conn.commit()
+
+    return {
+        "management_id": management_id,
+        "status": "New",
+        "created": True
+    }

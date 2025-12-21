@@ -1,5 +1,5 @@
 # ============================================================
-# Dispute Notes API (NC/ND) - ERP-SOM
+# Dispute Notes API (NC / ND) - ERP-SOM
 # ============================================================
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
@@ -17,22 +17,48 @@ router = APIRouter(
 )
 
 # ============================================================
-# Helpers
+# HELPERS
 # ============================================================
 
-def _calc_new_disputed_amount(old_amount: float, tipo: str, monto: float) -> float:
-    return old_amount - monto if tipo == "NC" else old_amount + monto
-
-
-def _ensure_disputed_amount(cur, management_id: int, monto_original: float):
-    """
-    Garantiza que disputed_amount nunca sea NULL
-    """
+def _get_table_columns(cur, table_name: str) -> Dict[str, dict]:
     cur.execute("""
-        UPDATE dispute_management
-        SET disputed_amount = COALESCE(disputed_amount, %s)
-        WHERE id = %s
-    """, (monto_original, management_id))
+        SELECT column_name, is_nullable, column_default
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = %s
+        ORDER BY ordinal_position
+    """, (table_name,))
+    return {r["column_name"]: r for r in cur.fetchall()}
+
+
+def _find_billing_table(cur) -> str:
+    candidates = [
+        "factura",
+        "facturas",
+        "billing",
+        "billing_factura",
+        "billing_facturas",
+    ]
+
+    cur.execute("""
+        SELECT table_name
+        FROM information_schema.tables
+        WHERE table_schema = 'public'
+    """)
+    existing = {r["table_name"] for r in cur.fetchall()}
+
+    for t in candidates:
+        if t in existing:
+            return t
+
+    raise HTTPException(
+        status_code=500,
+        detail="No se encontró tabla de Billing (factura / facturas / billing)"
+    )
+
+
+def _calc_new_disputed_amount(old: float, tipo: str, monto: float) -> float:
+    return old - monto if tipo == "NC" else old + monto
 
 
 def _close_if_zero(cur, management_id: int, new_amount: float):
@@ -58,21 +84,23 @@ def _close_if_zero(cur, management_id: int, new_amount: float):
 
 def _insert_history(cur, management_id: int, comentario: str, user: str):
     cur.execute("""
-        INSERT INTO dispute_history (dispute_management_id, comentario, created_by)
+        INSERT INTO dispute_history
+        (dispute_management_id, comentario, created_by)
         VALUES (%s, %s, %s)
     """, (management_id, comentario, user))
 
 
-def _get_context(cur, management_id: int):
+def _get_dispute_context(cur, management_id: int) -> dict:
     cur.execute("""
         SELECT
             dm.id,
             dm.disputed_amount,
-            d.monto AS monto_original,
+            dm.dispute_id,
             d.dispute_case,
             d.numero_documento,
             d.codigo_cliente,
-            d.nombre_cliente
+            d.nombre_cliente,
+            d.monto AS monto_original
         FROM dispute_management dm
         JOIN disputa d ON d.id = dm.dispute_id
         WHERE dm.id = %s
@@ -84,30 +112,8 @@ def _get_context(cur, management_id: int):
 
 
 # ============================================================
-# Billing inserter (SEGURIDAD REAL)
+# BILLING INSERT
 # ============================================================
-
-def _find_billing_table(cur):
-    cur.execute("""
-        SELECT table_name
-        FROM information_schema.tables
-        WHERE table_schema='public'
-    """)
-    tables = {r["table_name"] for r in cur.fetchall()}
-    for t in ("factura", "facturas", "billing_factura", "billing_facturas"):
-        if t in tables:
-            return t
-    raise HTTPException(500, "No se encontró tabla de Billing")
-
-
-def _get_columns(cur, table):
-    cur.execute("""
-        SELECT column_name, is_nullable, column_default
-        FROM information_schema.columns
-        WHERE table_schema='public' AND table_name=%s
-    """, (table,))
-    return {c["column_name"]: c for c in cur.fetchall()}
-
 
 def _crear_en_billing(
     cur,
@@ -130,46 +136,30 @@ def _crear_en_billing(
     now = datetime.now()
 
     values = {
-        # Identidad
         "tipo": tipo,
         "tipo_factura": tipo,
         "tipo_documento": tipo,
         "numero": dispute_case,
         "numero_documento": dispute_case,
-        "consecutivo": dispute_case,
-
-        # Cliente
-        "cliente": nombre_cliente,
         "codigo_cliente": codigo_cliente,
+        "cliente": nombre_cliente,
         "nombre_cliente": nombre_cliente,
-
-        # Importes
         "moneda": moneda,
         "total": monto,
         "monto": monto,
-        "importe": monto,
-
-        # Fechas (CRÍTICO)
+        "estado": "CREATED",
+        "status": "CREATED",
         "fecha": today,
         "fecha_emision": today,
         "created_at": now,
-
-        # Estado
-        "estado": "CREATED",
-        "status": "CREATED",
-
-        # Referencias
-        "referencia_externa": numero_documento,
-        "numero_referencia": numero_documento,
         "comentario": f"{source} | Dispute {dispute_case} | Doc {numero_documento}",
         "detalle": f"{source} | Dispute {dispute_case} | Doc {numero_documento}",
-        "observacion": f"{source} | Dispute {dispute_case} | Doc {numero_documento}",
+        "referencia_externa": numero_documento,
     }
 
     if xml_raw:
         values["xml"] = xml_raw
         values["xml_raw"] = xml_raw
-        values["xml_text"] = xml_raw
 
     insert_cols = []
     insert_vals = []
@@ -178,16 +168,11 @@ def _crear_en_billing(
         if col in values:
             insert_cols.append(col)
             insert_vals.append(values[col])
-        else:
-            # 🚨 Columna NOT NULL sin default → ERROR CONTROLADO
-            if meta["is_nullable"] == "NO" and meta["column_default"] is None:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Columna NOT NULL sin valor: '{col}' en tabla '{table}'"
-                )
-
-    if not insert_cols:
-        raise HTTPException(500, "No hay columnas válidas para insertar en Billing")
+        elif meta["is_nullable"] == "NO" and meta["column_default"] is None:
+            raise HTTPException(
+                500,
+                f"Columna NOT NULL sin valor en '{table}': {col}"
+            )
 
     q = sql.SQL("""
         INSERT INTO {table} ({cols})
@@ -199,75 +184,60 @@ def _crear_en_billing(
         vals=sql.SQL(", ").join(sql.Placeholder() for _ in insert_cols),
     )
 
-    try:
-        cur.execute(q, insert_vals)
-        return cur.fetchone()["id"]
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error insertando en Billing ({table}): {str(e)}"
-        )
+    cur.execute(q, insert_vals)
+    return cur.fetchone()["id"]
 
 
 # ============================================================
-# NC / ND MANUAL
+# POST /notes/manual
 # ============================================================
 
 @router.post("/{management_id}/notes/manual")
 def create_note_manual(management_id: int, payload: dict, conn=Depends(get_db)):
 
     tipo = payload.get("tipo")
-    monto = float(payload.get("monto", 0))
+    monto = payload.get("monto")
     moneda = payload.get("moneda", "USD")
     user = payload.get("user", "system")
-    comentario = payload.get("comentario", "")
+    comentario_user = payload.get("comentario", "")
 
-    if tipo not in ("NC", "ND") or monto <= 0:
-        raise HTTPException(400, "Datos inválidos")
+    if tipo not in ("NC", "ND"):
+        raise HTTPException(400, "Tipo inválido")
+    monto = float(monto)
+    if monto <= 0:
+        raise HTTPException(400, "Monto inválido")
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    try:
-        ctx = _get_context(cur, management_id)
+    ctx = _get_dispute_context(cur, management_id)
+    current = ctx["disputed_amount"] or ctx["monto_original"] or 0
 
-        _ensure_disputed_amount(cur, management_id, ctx["monto_original"])
+    billing_id = _crear_en_billing(
+        cur,
+        tipo=tipo,
+        monto=monto,
+        moneda=moneda,
+        dispute_case=ctx["dispute_case"],
+        numero_documento=ctx["numero_documento"],
+        codigo_cliente=ctx["codigo_cliente"],
+        nombre_cliente=ctx["nombre_cliente"],
+        source="DISPUTE-MANUAL"
+    )
 
-        billing_id = _crear_en_billing(
-            cur,
-            tipo=tipo,
-            monto=monto,
-            moneda=moneda,
-            dispute_case=ctx["dispute_case"],
-            numero_documento=ctx["numero_documento"],
-            codigo_cliente=ctx["codigo_cliente"],
-            nombre_cliente=ctx["nombre_cliente"],
-            source="DISPUTE-MANUAL"
-        )
+    new_amount = _calc_new_disputed_amount(current, tipo, monto)
+    new_amount, resolved = _close_if_zero(cur, management_id, new_amount)
 
-        new_amount = _calc_new_disputed_amount(
-            ctx["disputed_amount"] or ctx["monto_original"],
-            tipo,
-            monto
-        )
+    hist = f"{tipo} MANUAL creada (Billing ID {billing_id}) por {monto:.2f} {moneda}"
+    if comentario_user:
+        hist += f" | {comentario_user}"
 
-        new_amount, resolved = _close_if_zero(cur, management_id, new_amount)
+    _insert_history(cur, management_id, hist, user)
 
-        _insert_history(
-            cur,
-            management_id,
-            f"{tipo} manual creada (Billing {billing_id}). {comentario}",
-            user
-        )
+    conn.commit()
 
-        conn.commit()
-
-        return {
-            "status": "ok",
-            "billing_id": billing_id,
-            "new_disputed_amount": new_amount,
-            "resolved": resolved
-        }
-
-    except Exception:
-        conn.rollback()
-        raise
+    return {
+        "status": "ok",
+        "billing_id": billing_id,
+        "new_disputed_amount": new_amount,
+        "resolved": resolved
+    }

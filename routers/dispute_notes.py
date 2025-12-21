@@ -109,51 +109,104 @@ def _get_columns(cur, table):
     return {c["column_name"]: c for c in cur.fetchall()}
 
 
-def _crear_en_billing(cur, *, tipo, monto, moneda,
-                      dispute_case, numero_documento,
-                      codigo_cliente, nombre_cliente, source):
+def _crear_en_billing(
+    cur,
+    *,
+    tipo: str,
+    monto: float,
+    moneda: str,
+    dispute_case: str,
+    numero_documento: str,
+    codigo_cliente: str,
+    nombre_cliente: str,
+    source: str,
+    xml_raw: Optional[str] = None
+) -> int:
 
     table = _find_billing_table(cur)
-    cols = _get_columns(cur, table)
+    cols = _get_table_columns(cur, table)
+
+    today = date.today()
+    now = datetime.now()
 
     values = {
+        # Identidad
         "tipo": tipo,
         "tipo_factura": tipo,
+        "tipo_documento": tipo,
         "numero": dispute_case,
         "numero_documento": dispute_case,
+        "consecutivo": dispute_case,
+
+        # Cliente
         "cliente": nombre_cliente,
         "codigo_cliente": codigo_cliente,
+        "nombre_cliente": nombre_cliente,
+
+        # Importes
         "moneda": moneda,
         "total": monto,
         "monto": monto,
+        "importe": monto,
+
+        # Fechas (CRÍTICO)
+        "fecha": today,
+        "fecha_emision": today,
+        "created_at": now,
+
+        # Estado
         "estado": "CREATED",
         "status": "CREATED",
-        "fecha": date.today(),
-        "created_at": datetime.now(),
-        "comentario": f"{source} | Dispute {dispute_case} | Doc {numero_documento}"
+
+        # Referencias
+        "referencia_externa": numero_documento,
+        "numero_referencia": numero_documento,
+        "comentario": f"{source} | Dispute {dispute_case} | Doc {numero_documento}",
+        "detalle": f"{source} | Dispute {dispute_case} | Doc {numero_documento}",
+        "observacion": f"{source} | Dispute {dispute_case} | Doc {numero_documento}",
     }
+
+    if xml_raw:
+        values["xml"] = xml_raw
+        values["xml_raw"] = xml_raw
+        values["xml_text"] = xml_raw
 
     insert_cols = []
     insert_vals = []
 
-    for c, meta in cols.items():
-        if c in values:
-            insert_cols.append(c)
-            insert_vals.append(values[c])
-        elif meta["is_nullable"] == "YES" or meta["column_default"] is not None:
-            continue
+    for col, meta in cols.items():
+        if col in values:
+            insert_cols.append(col)
+            insert_vals.append(values[col])
+        else:
+            # 🚨 Columna NOT NULL sin default → ERROR CONTROLADO
+            if meta["is_nullable"] == "NO" and meta["column_default"] is None:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Columna NOT NULL sin valor: '{col}' en tabla '{table}'"
+                )
 
     if not insert_cols:
-        raise HTTPException(500, "No hay columnas válidas para Billing")
+        raise HTTPException(500, "No hay columnas válidas para insertar en Billing")
 
-    q = sql.SQL("INSERT INTO {t} ({c}) VALUES ({v}) RETURNING id").format(
-        t=sql.Identifier(table),
-        c=sql.SQL(",").join(map(sql.Identifier, insert_cols)),
-        v=sql.SQL(",").join(sql.Placeholder() for _ in insert_cols)
+    q = sql.SQL("""
+        INSERT INTO {table} ({cols})
+        VALUES ({vals})
+        RETURNING id
+    """).format(
+        table=sql.Identifier(table),
+        cols=sql.SQL(", ").join(map(sql.Identifier, insert_cols)),
+        vals=sql.SQL(", ").join(sql.Placeholder() for _ in insert_cols),
     )
 
-    cur.execute(q, insert_vals)
-    return cur.fetchone()["id"]
+    try:
+        cur.execute(q, insert_vals)
+        return cur.fetchone()["id"]
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error insertando en Billing ({table}): {str(e)}"
+        )
 
 
 # ============================================================

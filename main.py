@@ -24,6 +24,8 @@ from routers.billing import router as billing_router
 from routers.collections import router as collections_router
 from routers.bank_reconciliation import router as bank_reconciliation_router
 from routers.incoming_payments import router as incoming_payments_router
+from routers.dispute_management import router as dispute_management_router
+from routers.dispute_notes import router as dispute_notes_router
 
 
 
@@ -113,6 +115,8 @@ app.include_router(billing_router)
 app.include_router(collections_router)
 app.include_router(bank_reconciliation_router)
 app.include_router(incoming_payments_router)
+app.include_router(dispute_management_router)
+app.include_router(dispute_notes_router)
 
 # ============================================================
 # EJECUCIÓN LOCAL

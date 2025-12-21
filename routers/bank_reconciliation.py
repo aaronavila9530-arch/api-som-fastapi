@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, Query
 from psycopg2.extras import RealDictCursor
 from typing import Optional
+from fastapi import APIRouter, Depends, Query, HTTPException
+
 
 from database import get_db
 
@@ -146,20 +148,21 @@ def get_cash_app_applied(
         "data": rows
     }
 
+
 # ============================================================
-# POST /bank-reconciliation/applied/{detail_id}/reverse
+# POST /bank-reconciliation/{cash_app_id}/reverse
 # ============================================================
-@router.post("/applied/{detail_id}/reverse")
-def reverse_cash_app_detail(
-    detail_id: int,
+@router.post("/{cash_app_id}/reverse")
+def reverse_cash_app(
+    cash_app_id: int,
     payload: dict,
     conn=Depends(get_db)
 ):
     """
     payload esperado:
     {
-        "reason": "WRONG_APPLICATION",
-        "comment": "Applied to incorrect invoice"
+        "reason": "WRONG_PAYMENT",
+        "comment": "Payment registered incorrectly"
     }
     """
 
@@ -174,42 +177,32 @@ def reverse_cash_app_detail(
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    # Verificar que exista y no esté revertido
+    # Verificar que exista el pago
     cur.execute("""
         SELECT id
-        FROM cash_app_detail
+        FROM cash_app
         WHERE id = %(id)s
-          AND is_reversed = FALSE
-    """, {"id": detail_id})
+    """, {"id": cash_app_id})
 
     row = cur.fetchone()
     if not row:
         cur.close()
         raise HTTPException(
             status_code=404,
-            detail="Applied record not found or already reversed."
+            detail="Payment not found in cash_app."
         )
 
-    # Reversa lógica
+    # ELIMINAR EL PAGO (REVERSA REAL)
     cur.execute("""
-        UPDATE cash_app_detail
-        SET
-            is_reversed = TRUE,
-            reversed_at = NOW(),
-            reversed_reason = %(reason)s,
-            reversed_comment = %(comment)s
+        DELETE FROM cash_app
         WHERE id = %(id)s
-    """, {
-        "id": detail_id,
-        "reason": reason,
-        "comment": comment
-    })
+    """, {"id": cash_app_id})
 
     conn.commit()
     cur.close()
 
     return {
         "status": "success",
-        "message": "Application reversed successfully."
+        "message": "Payment reversed and removed from cash_app.",
+        "cash_app_id": cash_app_id
     }
-

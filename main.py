@@ -23,6 +23,7 @@ from routers.invoicing import router as invoicing_router
 from routers.billing import router as billing_router
 from routers.collections import router as collections_router
 from routers.bank_reconciliation import router as bank_reconciliation_router
+from routers.incoming_payments import router as incoming_payments_router
 
 
 
@@ -111,7 +112,7 @@ app.include_router(invoicing_router)
 app.include_router(billing_router)
 app.include_router(collections_router)
 app.include_router(bank_reconciliation_router)
-
+app.include_router(incoming_payments_router)
 
 # ============================================================
 # EJECUCIÓN LOCAL

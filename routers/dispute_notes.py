@@ -1,5 +1,6 @@
 # ============================================================
 # Dispute Notes API (NC / ND) - ERP-SOM
+# CÁLCULOS FINANCIEROS BLINDADOS CON DECIMAL
 # ============================================================
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
@@ -7,6 +8,7 @@ from psycopg2.extras import RealDictCursor
 from psycopg2 import sql
 from datetime import datetime, date
 from typing import Optional, Dict, Any
+from decimal import Decimal, ROUND_HALF_UP
 import xml.etree.ElementTree as ET
 
 from database import get_db
@@ -15,6 +17,27 @@ router = APIRouter(
     prefix="/dispute-management",
     tags=["Disputes - Notes (NC/ND)"]
 )
+
+# ============================================================
+# UTILIDADES FINANCIERAS
+# ============================================================
+
+DEC_2 = Decimal("0.01")
+
+
+def D(val) -> Decimal:
+    """Caster financiero seguro"""
+    if val is None:
+        return Decimal("0.00")
+    if isinstance(val, Decimal):
+        return val
+    return Decimal(str(val))
+
+
+def Q(val: Decimal) -> Decimal:
+    """Quantize a 2 decimales"""
+    return val.quantize(DEC_2, rounding=ROUND_HALF_UP)
+
 
 # ============================================================
 # HELPERS
@@ -57,12 +80,22 @@ def _find_billing_table(cur) -> str:
     )
 
 
-def _calc_new_disputed_amount(old: float, tipo: str, monto: float) -> float:
-    return old - monto if tipo == "NC" else old + monto
+def _calc_new_disputed_amount(old: Decimal, tipo: str, monto: Decimal) -> Decimal:
+    old = D(old)
+    monto = D(monto)
+
+    if tipo == "NC":
+        return Q(old - monto)
+    if tipo == "ND":
+        return Q(old + monto)
+
+    raise HTTPException(400, "Tipo inválido (NC / ND)")
 
 
-def _close_if_zero(cur, management_id: int, new_amount: float):
-    if new_amount <= 0:
+def _close_if_zero(cur, management_id: int, new_amount: Decimal):
+    new_amount = Q(new_amount)
+
+    if new_amount <= Decimal("0.00"):
         cur.execute("""
             UPDATE dispute_management
             SET disputed_amount = 0,
@@ -71,7 +104,7 @@ def _close_if_zero(cur, management_id: int, new_amount: float):
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
         """, (datetime.now(), management_id))
-        return 0.0, True
+        return Decimal("0.00"), True
 
     cur.execute("""
         UPDATE dispute_management
@@ -119,7 +152,7 @@ def _crear_en_billing(
     cur,
     *,
     tipo: str,
-    monto: float,
+    monto: Decimal,
     moneda: str,
     dispute_case: str,
     numero_documento: str,
@@ -128,6 +161,8 @@ def _crear_en_billing(
     source: str,
     xml_raw: Optional[str] = None
 ) -> int:
+
+    monto = Q(D(monto))
 
     table = _find_billing_table(cur)
     cols = _get_table_columns(cur, table)
@@ -196,21 +231,26 @@ def _crear_en_billing(
 def create_note_manual(management_id: int, payload: dict, conn=Depends(get_db)):
 
     tipo = payload.get("tipo")
-    monto = payload.get("monto")
+    monto_raw = payload.get("monto")
     moneda = payload.get("moneda", "USD")
     user = payload.get("user", "system")
     comentario_user = payload.get("comentario", "")
 
     if tipo not in ("NC", "ND"):
         raise HTTPException(400, "Tipo inválido")
-    monto = float(monto)
-    if monto <= 0:
+
+    try:
+        monto = Q(D(monto_raw))
+    except Exception:
         raise HTTPException(400, "Monto inválido")
+
+    if monto <= Decimal("0.00"):
+        raise HTTPException(400, "Monto debe ser mayor a 0")
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     ctx = _get_dispute_context(cur, management_id)
-    current = ctx["disputed_amount"] or ctx["monto_original"] or 0
+    current = D(ctx["disputed_amount"] or ctx["monto_original"] or 0)
 
     billing_id = _crear_en_billing(
         cur,
@@ -227,7 +267,7 @@ def create_note_manual(management_id: int, payload: dict, conn=Depends(get_db)):
     new_amount = _calc_new_disputed_amount(current, tipo, monto)
     new_amount, resolved = _close_if_zero(cur, management_id, new_amount)
 
-    hist = f"{tipo} MANUAL creada (Billing ID {billing_id}) por {monto:.2f} {moneda}"
+    hist = f"{tipo} MANUAL creada (Billing ID {billing_id}) por {monto} {moneda}"
     if comentario_user:
         hist += f" | {comentario_user}"
 
@@ -238,6 +278,6 @@ def create_note_manual(management_id: int, payload: dict, conn=Depends(get_db)):
     return {
         "status": "ok",
         "billing_id": billing_id,
-        "new_disputed_amount": new_amount,
+        "new_disputed_amount": float(new_amount),
         "resolved": resolved
     }

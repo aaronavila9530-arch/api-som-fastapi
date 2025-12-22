@@ -177,7 +177,7 @@ def delete_credito_cliente(codigo_cliente: str, conn=Depends(get_db)):
 
 # ============================================================
 # GET /cliente-credito/exposure/{codigo_cliente}
-# EXPOSICIÓN CREDITICIA CONSOLIDADA (ALINEADA A DB REAL)
+# EXPOSICIÓN CREDITICIA CONSOLIDADA (FIX DEFINITIVO)
 # ============================================================
 @router.get("/exposure/{codigo_cliente}")
 def get_credit_exposure(
@@ -189,32 +189,25 @@ def get_credit_exposure(
 
     try:
         # ====================================================
-        # 1️⃣ CREDIT CONFIG (TABLA REAL)
+        # 1️⃣ CREDIT CONFIG
         # ====================================================
         cur.execute("""
             SELECT
                 limite_credito,
-                termino_pago,
-                moneda,
-                estado_credito,
-                hold_manual
+                termino_pago
             FROM cliente_credito
             WHERE codigo_cliente = %s
         """, (codigo_cliente,))
 
         credit = cur.fetchone()
-
         if not credit:
-            raise HTTPException(
-                404,
-                "Cliente sin configuración de crédito"
-            )
+            raise HTTPException(404, "Cliente sin configuración de crédito")
 
-        limite_credito = float(credit.get("limite_credito") or 0)
-        termino_pago = int(credit.get("termino_pago") or 0)
+        limite_credito = float(credit["limite_credito"] or 0)
+        termino_pago = int(credit["termino_pago"] or 0)
 
         # ====================================================
-        # 2️⃣ TOTAL FACTURAS (INVOICING)
+        # 2️⃣ TOTAL FACTURAS
         # ====================================================
         cur.execute("""
             SELECT
@@ -247,32 +240,28 @@ def get_credit_exposure(
         # 4️⃣ EXPOSICIÓN REAL
         # ====================================================
         exposicion_real = total_facturas - total_nc
-
-        # ====================================================
-        # 5️⃣ DISPONIBLE
-        # ====================================================
         disponible = limite_credito - exposicion_real
 
         # ====================================================
-        # 6️⃣ SEMÁFORO + ESTADO EXPOSICIÓN
+        # 5️⃣ SEMÁFORO
         # ====================================================
-        porcentaje_disponible = (
-            disponible / limite_credito
-            if limite_credito > 0 else -1
-        )
-
-        if disponible <= 0:
+        if limite_credito <= 0:
             semaforo = "ROJO"
             exposicion_estado = "OVERLIMIT"
-        elif porcentaje_disponible <= 0.20:
-            semaforo = "AMARILLO"
-            exposicion_estado = "CRITICO"
         else:
-            semaforo = "VERDE"
-            exposicion_estado = "NORMAL"
+            pct = disponible / limite_credito
+            if disponible <= 0:
+                semaforo = "ROJO"
+                exposicion_estado = "OVERLIMIT"
+            elif pct <= 0.20:
+                semaforo = "AMARILLO"
+                exposicion_estado = "CRITICO"
+            else:
+                semaforo = "VERDE"
+                exposicion_estado = "NORMAL"
 
         # ====================================================
-        # 7️⃣ PAYMENT TREND (INCOMING PAYMENTS)
+        # 6️⃣ PAYMENT TREND (FIX FECHAS + TIPOS)
         # ====================================================
         avg_days = None
         trend = "SIN_DATOS"
@@ -280,14 +269,11 @@ def get_credit_exposure(
         cur.execute("""
             SELECT
                 AVG(
-                    DATE_PART(
-                        'day',
-                        p.fecha_pago - i.fecha_emision
-                    )
+                    (p.fecha_pago::date - i.fecha_emision::date)
                 ) AS avg_days
             FROM incoming_payments p
             JOIN invoicing i
-                ON i.numero_documento = p.documento
+                ON i.numero_documento::text = p.documento::text
             WHERE
                 p.codigo_cliente = %s
                 AND p.estado = 'APPLIED'
@@ -298,7 +284,7 @@ def get_credit_exposure(
         row = cur.fetchone()
 
         if row and row["avg_days"] is not None:
-            avg_days = round(row["avg_days"])
+            avg_days = int(round(row["avg_days"]))
 
             if avg_days <= termino_pago:
                 trend = "BUENO"

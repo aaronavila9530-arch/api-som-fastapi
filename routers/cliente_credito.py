@@ -176,8 +176,8 @@ def delete_credito_cliente(codigo_cliente: str, conn=Depends(get_db)):
 
 
 # ============================================================
-# GET /credit/exposure/{codigo_cliente}
-# EXPOSICIÓN CREDITICIA CONSOLIDADA
+# GET /cliente-credito/exposure/{codigo_cliente}
+# EXPOSICIÓN CREDITICIA CONSOLIDADA (ALINEADA A DB REAL)
 # ============================================================
 @router.get("/exposure/{codigo_cliente}")
 def get_credit_exposure(
@@ -189,12 +189,15 @@ def get_credit_exposure(
 
     try:
         # ====================================================
-        # 1️⃣ CREDIT LIMIT + TERMINO PAGO
+        # 1️⃣ CREDIT CONFIG (TABLA REAL)
         # ====================================================
         cur.execute("""
             SELECT
-                credit_limit,
-                termino_pago
+                limite_credito,
+                termino_pago,
+                moneda,
+                estado_credito,
+                hold_manual
             FROM cliente_credito
             WHERE codigo_cliente = %s
         """, (codigo_cliente,))
@@ -207,87 +210,112 @@ def get_credit_exposure(
                 "Cliente sin configuración de crédito"
             )
 
-        credit_limit = float(credit["credit_limit"] or 0)
+        limite_credito = float(credit.get("limite_credito") or 0)
         termino_pago = int(credit.get("termino_pago") or 0)
 
         # ====================================================
-        # 2️⃣ TOTAL FACTURADO (INVOICING)
+        # 2️⃣ TOTAL FACTURAS (INVOICING)
         # ====================================================
         cur.execute("""
             SELECT
-                COALESCE(SUM(total), 0) AS total_facturado
+                COALESCE(SUM(total), 0) AS total_facturas
             FROM invoicing
             WHERE
                 codigo_cliente = %s
                 AND tipo_documento = 'FACTURA'
-                AND estado != 'CANCELADA'
+                AND estado = 'EMITIDA'
         """, (codigo_cliente,))
 
-        total_facturado = float(cur.fetchone()["total_facturado"] or 0)
+        total_facturas = float(cur.fetchone()["total_facturas"] or 0)
 
         # ====================================================
-        # 3️⃣ DISPONIBLE
+        # 3️⃣ TOTAL NOTAS DE CRÉDITO
         # ====================================================
-        disponible = credit_limit - total_facturado
+        cur.execute("""
+            SELECT
+                COALESCE(SUM(total), 0) AS total_nc
+            FROM invoicing
+            WHERE
+                codigo_cliente = %s
+                AND tipo_documento = 'NOTA_CREDITO'
+                AND estado = 'EMITIDA'
+        """, (codigo_cliente,))
+
+        total_nc = float(cur.fetchone()["total_nc"] or 0)
 
         # ====================================================
-        # 4️⃣ SEMÁFORO + EXPOSICIÓN
+        # 4️⃣ EXPOSICIÓN REAL
+        # ====================================================
+        exposicion_real = total_facturas - total_nc
+
+        # ====================================================
+        # 5️⃣ DISPONIBLE
+        # ====================================================
+        disponible = limite_credito - exposicion_real
+
+        # ====================================================
+        # 6️⃣ SEMÁFORO + ESTADO EXPOSICIÓN
         # ====================================================
         porcentaje_disponible = (
-            disponible / credit_limit
-            if credit_limit > 0 else -1
+            disponible / limite_credito
+            if limite_credito > 0 else -1
         )
 
         if disponible <= 0:
             semaforo = "ROJO"
-            exposicion = "OVERLIMIT"
+            exposicion_estado = "OVERLIMIT"
         elif porcentaje_disponible <= 0.20:
             semaforo = "AMARILLO"
-            exposicion = "CRITICO"
+            exposicion_estado = "CRITICO"
         else:
             semaforo = "VERDE"
-            exposicion = "NORMAL"
+            exposicion_estado = "NORMAL"
 
         # ====================================================
-        # 5️⃣ PAYMENT TREND (BANK RECONCILIATION)
+        # 7️⃣ PAYMENT TREND (INCOMING PAYMENTS)
         # ====================================================
+        avg_days = None
+        trend = "SIN_DATOS"
+
         cur.execute("""
             SELECT
                 AVG(
                     DATE_PART(
                         'day',
-                        br.fecha_pago - i.fecha_emision
+                        p.fecha_pago - i.fecha_emision
                     )
                 ) AS avg_days
-            FROM bank_reconciliation_applied br
+            FROM incoming_payments p
             JOIN invoicing i
-                ON i.numero_documento = br.numero_documento
+                ON i.numero_documento = p.documento
             WHERE
-                i.codigo_cliente = %s
+                p.codigo_cliente = %s
+                AND p.estado = 'APPLIED'
+                AND p.fecha_pago IS NOT NULL
+                AND i.fecha_emision IS NOT NULL
         """, (codigo_cliente,))
 
-        avg_days = cur.fetchone()["avg_days"]
+        row = cur.fetchone()
 
-        avg_days = round(avg_days) if avg_days else None
+        if row and row["avg_days"] is not None:
+            avg_days = round(row["avg_days"])
 
-        if avg_days is None:
-            trend = "SIN_DATOS"
-        elif avg_days <= termino_pago:
-            trend = "BUENO"
-        elif avg_days <= termino_pago + 15:
-            trend = "MEDIO"
-        else:
-            trend = "LENTO"
+            if avg_days <= termino_pago:
+                trend = "BUENO"
+            elif avg_days <= termino_pago + 15:
+                trend = "MEDIO"
+            else:
+                trend = "LENTO"
 
         # ====================================================
         # RESPONSE
         # ====================================================
         return {
             "codigo_cliente": codigo_cliente,
-            "credit_limit": credit_limit,
-            "total_facturado": total_facturado,
+            "limite_credito": limite_credito,
+            "total_facturado": exposicion_real,
             "disponible": disponible,
-            "exposicion": exposicion,
+            "exposicion": exposicion_estado,
             "semaforo": semaforo,
             "payment_trend": {
                 "avg_days_to_pay": avg_days,

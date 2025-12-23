@@ -5,11 +5,71 @@ from typing import Optional
 
 from database import get_db
 
-
 router = APIRouter(
     prefix="/invoice-to-pay",
     tags=["Finance - Invoice to Pay"]
 )
+
+# ============================================================
+# 🔁 SYNC SERVICIOS → PAYMENT OBLIGATIONS
+# ============================================================
+def _sync_servicios_to_itp(cur):
+    """
+    Inserta honorarios de surveyores desde servicios
+    evitando duplicados
+    """
+    cur.execute("""
+        INSERT INTO payment_obligations (
+            record_type,
+            obligation_type,
+            obligation_detail,
+            payee_type,
+            payee_name,
+            reference,
+            vessel,
+            country,
+            operation,
+            currency,
+            total,
+            balance,
+            issue_date,
+            due_date,
+            status,
+            source_table,
+            source_id,
+            created_at
+        )
+        SELECT
+            'OBLIGATION',
+            'SURVEYOR_FEE',
+            s.detalle,
+            'SURVEYOR',
+            s.surveyor,
+            s.consec,
+            s.buque_contenedor,
+            s.pais,
+            s.operacion,
+            'USD',
+            s.honorarios,
+            s.honorarios,
+            s.fecha_fin,
+            s.fecha_fin + (COALESCE(s.termino_pago, 0) || ' days')::interval,
+            'PENDING',
+            'servicios',
+            s.id,
+            NOW()
+        FROM servicios s
+        WHERE
+            s.surveyor IS NOT NULL
+            AND s.honorarios > 0
+            AND NOT EXISTS (
+                SELECT 1
+                FROM payment_obligations po
+                WHERE po.source_table = 'servicios'
+                  AND po.source_id = s.id
+            )
+    """)
+
 
 # ============================================================
 # 1️⃣ SEARCH PAYMENT OBLIGATIONS
@@ -22,6 +82,10 @@ def search_invoice_to_pay(
     conn=Depends(get_db)
 ):
     cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # 🔁 Asegurar que servicios estén sincronizados
+    _sync_servicios_to_itp(cur)
+    conn.commit()
 
     filters = []
     params = []
@@ -44,6 +108,7 @@ def search_invoice_to_pay(
         SELECT
             id,
             payee_name,
+            obligation_detail,
             obligation_type,
             reference,
             vessel,
@@ -67,33 +132,69 @@ def search_invoice_to_pay(
     return {"data": rows}
 
 
+# ============================================================
+# 2️⃣ KPIs
+# ============================================================
 @router.get("/kpis")
-def invoice_to_pay_kpis(
-    conn=Depends(get_db)
-):
+def invoice_to_pay_kpis(conn=Depends(get_db)):
     cur = conn.cursor()
 
     sql = """
         SELECT
             COALESCE(SUM(CASE WHEN status IN ('PENDING','PARTIAL') THEN balance END), 0) AS pending,
             COALESCE(SUM(CASE WHEN status IN ('PARTIAL','PAID') THEN (total - balance) END), 0) AS paid,
-            ROUND(AVG(CASE WHEN status = 'PAID' THEN (last_payment_date - issue_date) END), 2) AS dpo,
-            COUNT(CASE WHEN balance > 0 AND due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '5 days' THEN 1 END) AS upcoming,
-            COUNT(CASE WHEN balance > 0 AND due_date < CURRENT_DATE THEN 1 END) AS overdue
+            ROUND(
+                AVG(
+                    CASE
+                        WHEN status = 'PAID'
+                        AND last_payment_date IS NOT NULL
+                        THEN (last_payment_date - issue_date)
+                    END
+                ), 2
+            ) AS dpo,
+            COUNT(
+                CASE
+                    WHEN balance > 0
+                    AND due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '5 days'
+                    THEN 1
+                END
+            ) AS upcoming,
+            COUNT(
+                CASE
+                    WHEN balance > 0
+                    AND due_date < CURRENT_DATE
+                    THEN 1
+                END
+            ) AS overdue,
+            COALESCE(
+                SUM(
+                    CASE
+                        WHEN balance > 0
+                        AND due_date < CURRENT_DATE
+                        THEN balance
+                    END
+                ), 0
+            ) AS overdue_amount
         FROM payment_obligations
         WHERE record_type = 'OBLIGATION'
     """
 
     cur.execute(sql)
-    pending, paid, dpo, upcoming, overdue = cur.fetchone()
+    pending, paid, dpo, upcoming, overdue, overdue_amount = cur.fetchone()
 
     return {
         "pending": pending,
         "paid": paid,
         "dpo": dpo,
         "upcoming": upcoming,
-        "overdue": overdue
+        "overdue": overdue,
+        "overdue_amount": overdue_amount
     }
+
+
+# ============================================================
+# 3️⃣ APPLY PAYMENT
+# ============================================================
 @router.post("/apply-payment")
 def apply_payment(
     obligation_id: int,
@@ -149,7 +250,3 @@ def apply_payment(
         "new_balance": new_balance,
         "status": new_status
     }
-
-
-
-

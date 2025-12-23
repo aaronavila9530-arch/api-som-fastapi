@@ -650,13 +650,24 @@ def upload_invoice_pdf(
     return {"message": "PDF uploaded and obligation created successfully"}
 
 
-@router.delete("/invoice-to-pay/{obligation_id}")
+@router.delete("/{obligation_id}")
 def delete_invoice_to_pay(obligation_id: int, conn=Depends(get_db)):
     cur = conn.cursor()
+
+    cur.execute(
+        "SELECT id FROM payment_obligations WHERE id = %s",
+        (obligation_id,)
+    )
+    row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Obligation not found")
+
     cur.execute(
         "DELETE FROM payment_obligations WHERE id = %s",
         (obligation_id,)
     )
-    conn.commit()
-    return {"status": "ok"}
 
+    conn.commit()
+
+    return {"status": "ok"}

@@ -649,3 +649,14 @@ def upload_invoice_pdf(
 
     return {"message": "PDF uploaded and obligation created successfully"}
 
+
+@router.delete("/invoice-to-pay/{obligation_id}")
+def delete_invoice_to_pay(obligation_id: int, conn=Depends(get_db)):
+    cur = conn.cursor()
+    cur.execute(
+        "DELETE FROM payment_obligations WHERE id = %s",
+        (obligation_id,)
+    )
+    conn.commit()
+    return {"status": "ok"}
+

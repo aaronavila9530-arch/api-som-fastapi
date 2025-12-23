@@ -74,58 +74,122 @@ def _sync_servicios_to_itp(cur):
             )
     """)
 
-# ============================================================
-# 1️⃣ SEARCH
-# ============================================================
 @router.get("/search")
 def search_invoice_to_pay(
     obligation_type: Optional[str] = Query(None),
     payee: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
+    issue_date_from: Optional[date] = Query(None),
+    issue_date_to: Optional[date] = Query(None),
+    payment_date_from: Optional[date] = Query(None),
+    payment_date_to: Optional[date] = Query(None),
     conn=Depends(get_db)
 ):
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
+    # 🔁 Sync servicios → ITP
     _sync_servicios_to_itp(cur)
     conn.commit()
 
     filters = []
     params = []
 
-    if obligation_type:
-        filters.append("obligation_type = %s")
-        params.append(obligation_type)
+    # =========================
+    # DEFAULT: excluir PAID
+    # =========================
+    if not status:
+        filters.append("status <> 'PAID'")
+    else:
+        filters.append("status = %s")
+        params.append(status)
 
+    # =========================
+    # OBLIGATION TYPE
+    # =========================
+    if obligation_type:
+        if obligation_type == "SURVEYOR":
+            filters.append("origin = 'SERVICIOS'")
+        elif obligation_type == "FACTURA_ELECTRONICA":
+            filters.append("origin = 'XML'")
+        elif obligation_type == "MANUAL":
+            filters.append("origin = 'MANUAL'")
+
+    # =========================
+    # PAYEE
+    # =========================
     if payee:
         filters.append("payee_name ILIKE %s")
         params.append(f"%{payee}%")
 
-    if status:
-        filters.append("status = %s")
-        params.append(status)
+    # =========================
+    # ISSUE DATE RANGE
+    # =========================
+    if issue_date_from:
+        filters.append("issue_date >= %s")
+        params.append(issue_date_from)
 
-    where_clause = " AND " + " AND ".join(filters) if filters else ""
+    if issue_date_to:
+        filters.append("issue_date <= %s")
+        params.append(issue_date_to)
+
+    # =========================
+    # PAYMENT DATE RANGE
+    # =========================
+    if payment_date_from:
+        filters.append("last_payment_date >= %s")
+        params.append(payment_date_from)
+
+    if payment_date_to:
+        filters.append("last_payment_date <= %s")
+        params.append(payment_date_to)
+
+    where_clause = " AND ".join(filters)
+    if where_clause:
+        where_clause = "WHERE " + where_clause
 
     sql = f"""
         SELECT
             id,
             payee_name,
-            obligation_type,
-            reference,
+
+            -- 🧠 OBLIGATION
+            CASE
+                WHEN origin = 'SERVICIOS' THEN 'SURVEYOR'
+                WHEN origin = 'XML' THEN 'FACTURA_ELECTRONICA'
+                WHEN origin = 'MANUAL' THEN 'MANUAL'
+                ELSE obligation_type
+            END AS obligation_type,
+
+            -- 📌 REFERENCIA
+            CASE
+                WHEN origin = 'SERVICIOS' THEN notes
+                ELSE reference
+            END AS reference,
+
             vessel,
-            country,
+
+            -- 🌍 PAÍS
+            CASE
+                WHEN origin = 'XML' THEN 'Costa Rica'
+                ELSE country
+            END AS country,
+
             operation,
             currency,
             total,
             balance,
-            last_payment_date,
             status,
-            due_date,
-            notes
+            last_payment_date,
+
+            -- 📅 ISSUE DATE
+            issue_date,
+
+            -- ⏳ DUE DATE
+            due_date
+
         FROM payment_obligations
-        WHERE record_type = 'OBLIGATION'
         {where_clause}
-        ORDER BY created_at DESC
+        ORDER BY issue_date DESC
     """
 
     try:

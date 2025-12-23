@@ -71,9 +71,6 @@ def _sync_servicios_to_itp(cur):
     """)
 
 
-# ============================================================
-# 1️⃣ SEARCH PAYMENT OBLIGATIONS
-# ============================================================
 @router.get("/search")
 def search_invoice_to_pay(
     obligation_type: Optional[str] = Query(None),
@@ -82,10 +79,6 @@ def search_invoice_to_pay(
     conn=Depends(get_db)
 ):
     cur = conn.cursor(cursor_factory=RealDictCursor)
-
-    # 🔁 Asegurar que servicios estén sincronizados
-    _sync_servicios_to_itp(cur)
-    conn.commit()
 
     filters = []
     params = []
@@ -108,7 +101,6 @@ def search_invoice_to_pay(
         SELECT
             id,
             payee_name,
-            obligation_detail,
             obligation_type,
             reference,
             vessel,
@@ -126,8 +118,14 @@ def search_invoice_to_pay(
         ORDER BY due_date ASC
     """
 
-    cur.execute(sql, params)
-    rows = cur.fetchall()
+    try:
+        cur.execute(sql, params)
+        rows = cur.fetchall()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"InvoiceToPay search error: {str(e)}"
+        )
 
     return {"data": rows}
 

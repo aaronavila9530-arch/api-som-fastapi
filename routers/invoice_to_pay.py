@@ -105,6 +105,7 @@ def search_invoice_to_pay(
     # =================
     # FILTRO POR ESTADO
     # =================
+    # Si no se especifica, excluir PAID
     if status:
         filters.append("status = %s")
         params.append(status)
@@ -116,7 +117,7 @@ def search_invoice_to_pay(
     # =================================
     if obligation_type:
         if obligation_type.upper() == "SURVEYOR":
-            filters.append("obligation_type = 'SURVEYOR_FEE'")
+            filters.append("origin = 'SERVICIOS'")
         elif obligation_type.upper() == "FACTURA_ELECTRONICA":
             filters.append("origin = 'XML'")
         elif obligation_type.upper() == "MANUAL":
@@ -152,14 +153,17 @@ def search_invoice_to_pay(
     if filters:
         where_clause = "WHERE " + " AND ".join(filters)
 
+    # ========================================
+    # SELECT FINAL NORMALIZADO
+    # ========================================
     sql = f"""
         SELECT
             id,
             payee_name,
 
-            -- 🧠 obligation_type normalizado
+            -- 🧠 obligation_type normalizado según origen
             CASE
-                WHEN obligation_type = 'SURVEYOR_FEE' THEN 'Surveyors'
+                WHEN origin = 'SERVICIOS' THEN 'Surveyors'
                 WHEN origin = 'XML' THEN 'Factura electrónica'
                 WHEN origin = 'MANUAL' THEN 'Manual'
                 ELSE obligation_type
@@ -167,7 +171,7 @@ def search_invoice_to_pay(
 
             -- 📌 reference limpio
             CASE
-                WHEN obligation_type = 'SURVEYOR_FEE' THEN notes
+                WHEN origin = 'SERVICIOS' THEN notes
                 ELSE reference
             END AS reference,
 

@@ -95,7 +95,7 @@ def search_invoice_to_pay(
 ):
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    # 🔁 Sync servicios → ITP
+    # 🔁 Sync servicios → Invoice To Pay
     _sync_servicios_to_itp(cur)
     conn.commit()
 
@@ -113,9 +113,9 @@ def search_invoice_to_pay(
 
     # =================================
     # FILTRO POR TIPO DE OBLIGACIÓN
+    # (basado en payee_type REAL)
     # =================================
     if obligation_type:
-        # Ahora obligamos filtro con base en payee_type
         if obligation_type.upper() == "SURVEYOR":
             filters.append("payee_type = 'SURVEYOR'")
         elif obligation_type.upper() == "SUPPLIER":
@@ -123,9 +123,9 @@ def search_invoice_to_pay(
         elif obligation_type.upper() == "MANUAL":
             filters.append("origin = 'MANUAL'")
 
-    # ================
+    # =================
     # FILTRO BENEFICIARIO
-    # ================
+    # =================
     if payee:
         filters.append("payee_name ILIKE %s")
         params.append(f"%{payee}%")
@@ -154,18 +154,21 @@ def search_invoice_to_pay(
         where_clause = "WHERE " + " AND ".join(filters)
 
     # ========================================
-    # SELECT FINAL USANDO payee_type COMO Obligación
+    # SELECT FINAL CORRECTO
     # ========================================
     sql = f"""
         SELECT
             id,
             payee_name,
 
-            -- Obligación basada en payee_type
-            payee_type AS obligation_type,
+            -- ✅ COLUMNA Obligación = payee_type REAL
+            payee_type AS obligation,
 
-            -- Referencia exacta
-            reference,
+            -- ✅ COLUMNA Referencia (regla de negocio)
+            CASE
+                WHEN origin = 'SERVICIOS' THEN notes
+                ELSE reference
+            END AS referencia,
 
             vessel,
             country,
@@ -177,7 +180,7 @@ def search_invoice_to_pay(
             last_payment_date,
             issue_date,
             due_date,
-            notes
+            origin
 
         FROM payment_obligations
         {where_clause}
@@ -194,6 +197,7 @@ def search_invoice_to_pay(
         )
 
     return {"data": rows}
+
 
 # ============================================================
 # 2️⃣ KPIs — CONVERSIÓN CRC → USD (TC = 500)

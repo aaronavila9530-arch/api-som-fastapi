@@ -16,61 +16,61 @@ router = APIRouter(
 def _sync_servicios_to_itp(cur):
     """
     Inserta honorarios de surveyores desde servicios
-    evitando duplicados
+    usando SOLO columnas necesarias del modelo ITP
+    (sin fechas)
     """
     cur.execute("""
         INSERT INTO payment_obligations (
             record_type,
-            obligation_type,
-            obligation_detail,
             payee_type,
             payee_name,
+            obligation_type,
             reference,
             vessel,
             country,
             operation,
+            service_id,
             currency,
             total,
             balance,
-            issue_date,
-            due_date,
             status,
-            source_table,
-            source_id,
+            origin,
+            notes,
             created_at
         )
         SELECT
             'OBLIGATION',
-            'SURVEYOR_FEE',
-            s.detalle,
             'SURVEYOR',
             s.surveyor,
+            'SURVEYOR_FEE',
             s.consec,
             s.buque_contenedor,
             s.pais,
             s.operacion,
+            s.id,
             'USD',
             s.honorarios,
             s.honorarios,
-            s.fecha_fin,
-            s.fecha_fin + (COALESCE(s.termino_pago, 0) || ' days')::interval,
             'PENDING',
-            'servicios',
-            s.id,
+            'SERVICIOS',
+            s.detalle,
             NOW()
         FROM servicios s
         WHERE
             s.surveyor IS NOT NULL
+            AND s.honorarios IS NOT NULL
             AND s.honorarios > 0
             AND NOT EXISTS (
                 SELECT 1
                 FROM payment_obligations po
-                WHERE po.source_table = 'servicios'
-                  AND po.source_id = s.id
+                WHERE po.service_id = s.id
+                  AND po.origin = 'SERVICIOS'
             )
     """)
 
-
+# ============================================================
+# 1️⃣ SEARCH
+# ============================================================
 @router.get("/search")
 def search_invoice_to_pay(
     obligation_type: Optional[str] = Query(None),
@@ -79,6 +79,10 @@ def search_invoice_to_pay(
     conn=Depends(get_db)
 ):
     cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # 🔁 Sync servicios → ITP
+    _sync_servicios_to_itp(cur)
+    conn.commit()
 
     filters = []
     params = []
@@ -115,7 +119,7 @@ def search_invoice_to_pay(
         FROM payment_obligations
         WHERE record_type = 'OBLIGATION'
         {where_clause}
-        ORDER BY due_date ASC
+        ORDER BY created_at DESC
     """
 
     try:
@@ -128,7 +132,6 @@ def search_invoice_to_pay(
         )
 
     return {"data": rows}
-
 
 # ============================================================
 # 2️⃣ KPIs
@@ -146,6 +149,7 @@ def invoice_to_pay_kpis(conn=Depends(get_db)):
                     CASE
                         WHEN status = 'PAID'
                         AND last_payment_date IS NOT NULL
+                        AND issue_date IS NOT NULL
                         THEN (last_payment_date - issue_date)
                     END
                 ), 2
@@ -153,6 +157,7 @@ def invoice_to_pay_kpis(conn=Depends(get_db)):
             COUNT(
                 CASE
                     WHEN balance > 0
+                    AND due_date IS NOT NULL
                     AND due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '5 days'
                     THEN 1
                 END
@@ -160,35 +165,25 @@ def invoice_to_pay_kpis(conn=Depends(get_db)):
             COUNT(
                 CASE
                     WHEN balance > 0
+                    AND due_date IS NOT NULL
                     AND due_date < CURRENT_DATE
                     THEN 1
                 END
-            ) AS overdue,
-            COALESCE(
-                SUM(
-                    CASE
-                        WHEN balance > 0
-                        AND due_date < CURRENT_DATE
-                        THEN balance
-                    END
-                ), 0
-            ) AS overdue_amount
+            ) AS overdue
         FROM payment_obligations
         WHERE record_type = 'OBLIGATION'
     """
 
     cur.execute(sql)
-    pending, paid, dpo, upcoming, overdue, overdue_amount = cur.fetchone()
+    pending, paid, dpo, upcoming, overdue = cur.fetchone()
 
     return {
         "pending": pending,
         "paid": paid,
         "dpo": dpo,
         "upcoming": upcoming,
-        "overdue": overdue,
-        "overdue_amount": overdue_amount
+        "overdue": overdue
     }
-
 
 # ============================================================
 # 3️⃣ APPLY PAYMENT
@@ -202,7 +197,6 @@ def apply_payment(
 ):
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    # 1️⃣ Obtener obligación
     cur.execute("""
         SELECT id, balance
         FROM payment_obligations
@@ -225,7 +219,6 @@ def apply_payment(
     new_balance = balance - amount
     new_status = "PAID" if new_balance == 0 else "PARTIAL"
 
-    # 2️⃣ Actualizar obligación
     cur.execute("""
         UPDATE payment_obligations
         SET

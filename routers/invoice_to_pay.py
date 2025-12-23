@@ -105,11 +105,11 @@ def search_invoice_to_pay(
     # =================
     # FILTRO POR ESTADO
     # =================
-    # Si no se especifica, excluir PAID
     if status:
         filters.append("status = %s")
         params.append(status)
     else:
+        # Por defecto excluir pagados
         filters.append("status <> 'PAID'")
 
     # =================================
@@ -117,9 +117,9 @@ def search_invoice_to_pay(
     # =================================
     if obligation_type:
         if obligation_type.upper() == "SURVEYOR":
-            filters.append("origin = 'SERVICIOS'")
+            filters.append("obligation_type = 'SURVEYOR_FEE'")
         elif obligation_type.upper() == "FACTURA_ELECTRONICA":
-            filters.append("origin = 'XML'")
+            filters.append("obligation_type = 'SUPPLIER_INVOICE'")
         elif obligation_type.upper() == "MANUAL":
             filters.append("origin = 'MANUAL'")
 
@@ -161,25 +161,25 @@ def search_invoice_to_pay(
             id,
             payee_name,
 
-            -- 🧠 obligation_type normalizado según origen
+            -- 🧠 Obligación normalizada
             CASE
-                WHEN origin = 'SERVICIOS' THEN 'Surveyors'
-                WHEN origin = 'XML' THEN 'Factura electrónica'
+                WHEN obligation_type = 'SURVEYOR_FEE' THEN 'Surveyors'
+                WHEN obligation_type = 'SUPPLIER_INVOICE' THEN 'Factura electrónica'
                 WHEN origin = 'MANUAL' THEN 'Manual'
                 ELSE obligation_type
             END AS obligation_type,
 
             -- 📌 reference limpio
             CASE
-                WHEN origin = 'SERVICIOS' THEN notes
+                WHEN obligation_type = 'SURVEYOR_FEE' THEN notes
                 ELSE reference
             END AS reference,
 
             vessel,
 
-            -- 🌍 País (Costa Rica si XML)
+            -- 🌍 País
             CASE
-                WHEN origin = 'XML' THEN 'Costa Rica'
+                WHEN obligation_type = 'SUPPLIER_INVOICE' THEN 'Costa Rica'
                 ELSE country
             END AS country,
 

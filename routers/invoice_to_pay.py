@@ -155,6 +155,7 @@ def search_invoice_to_pay(
 
     # ========================================
     # SELECT FINAL NORMALIZADO
+    # (Modificado: obligation_type para servicios)
     # ========================================
     sql = f"""
         SELECT

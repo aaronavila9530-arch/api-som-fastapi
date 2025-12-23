@@ -161,9 +161,9 @@ def search_invoice_to_pay(
             id,
             payee_name,
 
-            -- 🧠 obligation_type normalizado
+            -- 🧠 obligation_type normalizado según origen
             CASE
-                WHEN origin = 'SERVICIOS' THEN 'SURVEYOR'
+                WHEN origin = 'SERVICIOS' THEN 'Surveyors'
                 WHEN origin = 'XML' THEN 'FACTURA_ELECTRONICA'
                 WHEN origin = 'MANUAL' THEN 'MANUAL'
                 ELSE obligation_type

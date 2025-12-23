@@ -16,8 +16,7 @@ router = APIRouter(
 def _sync_servicios_to_itp(cur):
     """
     Inserta honorarios de surveyores desde servicios
-    usando SOLO columnas necesarias del modelo ITP
-    (sin fechas)
+    usando SOLO columnas válidas del modelo ITP
     """
     cur.execute("""
         INSERT INTO payment_obligations (
@@ -47,7 +46,7 @@ def _sync_servicios_to_itp(cur):
             s.buque_contenedor,
             s.pais,
             s.operacion,
-            s.id,
+            s.consec,
             'USD',
             s.honorarios,
             s.honorarios,
@@ -63,7 +62,7 @@ def _sync_servicios_to_itp(cur):
             AND NOT EXISTS (
                 SELECT 1
                 FROM payment_obligations po
-                WHERE po.service_id = s.id
+                WHERE po.service_id = s.consec
                   AND po.origin = 'SERVICIOS'
             )
     """)
@@ -140,7 +139,7 @@ def search_invoice_to_pay(
 def invoice_to_pay_kpis(conn=Depends(get_db)):
     cur = conn.cursor()
 
-    sql = """
+    cur.execute("""
         SELECT
             COALESCE(SUM(CASE WHEN status IN ('PENDING','PARTIAL') THEN balance END), 0) AS pending,
             COALESCE(SUM(CASE WHEN status IN ('PARTIAL','PAID') THEN (total - balance) END), 0) AS paid,
@@ -158,30 +157,20 @@ def invoice_to_pay_kpis(conn=Depends(get_db)):
                 CASE
                     WHEN balance > 0
                     AND due_date IS NOT NULL
-                    AND due_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '5 days'
-                    THEN 1
-                END
-            ) AS upcoming,
-            COUNT(
-                CASE
-                    WHEN balance > 0
-                    AND due_date IS NOT NULL
                     AND due_date < CURRENT_DATE
                     THEN 1
                 END
             ) AS overdue
         FROM payment_obligations
         WHERE record_type = 'OBLIGATION'
-    """
+    """)
 
-    cur.execute(sql)
-    pending, paid, dpo, upcoming, overdue = cur.fetchone()
+    pending, paid, dpo, overdue = cur.fetchone()
 
     return {
         "pending": pending,
         "paid": paid,
         "dpo": dpo,
-        "upcoming": upcoming,
         "overdue": overdue
     }
 

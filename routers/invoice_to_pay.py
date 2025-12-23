@@ -162,7 +162,7 @@ def search_invoice_to_pay(
             payee_name,
 
             -- ✅ COLUMNA Obligación = payee_type REAL
-            payee_type AS obligation,
+            payee_type AS obligation_type,
 
             -- ✅ COLUMNA Referencia (regla de negocio)
             CASE

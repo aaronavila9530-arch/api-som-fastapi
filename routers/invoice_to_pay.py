@@ -109,17 +109,17 @@ def search_invoice_to_pay(
         filters.append("status = %s")
         params.append(status)
     else:
-        # Por defecto excluir pagados
         filters.append("status <> 'PAID'")
 
     # =================================
     # FILTRO POR TIPO DE OBLIGACIÓN
     # =================================
     if obligation_type:
+        # Ahora obligamos filtro con base en payee_type
         if obligation_type.upper() == "SURVEYOR":
-            filters.append("obligation_type = 'SURVEYOR_FEE'")
-        elif obligation_type.upper() == "FACTURA_ELECTRONICA":
-            filters.append("obligation_type = 'SUPPLIER_INVOICE'")
+            filters.append("payee_type = 'SURVEYOR'")
+        elif obligation_type.upper() == "SUPPLIER":
+            filters.append("payee_type = 'SUPPLIER'")
         elif obligation_type.upper() == "MANUAL":
             filters.append("origin = 'MANUAL'")
 
@@ -154,35 +154,21 @@ def search_invoice_to_pay(
         where_clause = "WHERE " + " AND ".join(filters)
 
     # ========================================
-    # SELECT FINAL NORMALIZADO
+    # SELECT FINAL USANDO payee_type COMO Obligación
     # ========================================
     sql = f"""
         SELECT
             id,
             payee_name,
 
-            -- 🧠 Obligación normalizada
-            CASE
-                WHEN obligation_type = 'SURVEYOR_FEE' THEN 'Surveyors'
-                WHEN obligation_type = 'SUPPLIER_INVOICE' THEN 'Factura electrónica'
-                WHEN origin = 'MANUAL' THEN 'Manual'
-                ELSE obligation_type
-            END AS obligation_type,
+            -- Obligación basada en payee_type
+            payee_type AS obligation_type,
 
-            -- 📌 reference limpio
-            CASE
-                WHEN obligation_type = 'SURVEYOR_FEE' THEN notes
-                ELSE reference
-            END AS reference,
+            -- Referencia exacta
+            reference,
 
             vessel,
-
-            -- 🌍 País
-            CASE
-                WHEN obligation_type = 'SUPPLIER_INVOICE' THEN 'Costa Rica'
-                ELSE country
-            END AS country,
-
+            country,
             operation,
             currency,
             total,

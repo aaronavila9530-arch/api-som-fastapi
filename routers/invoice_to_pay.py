@@ -3,6 +3,13 @@ from psycopg2.extras import RealDictCursor
 from datetime import date
 from typing import Optional
 
+
+import os
+import shutil
+from fastapi import UploadFile, File, Form
+from datetime import datetime
+
+
 from database import get_db
 
 router = APIRouter(
@@ -79,7 +86,6 @@ def search_invoice_to_pay(
 ):
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    # 🔁 Sync servicios → ITP
     _sync_servicios_to_itp(cur)
     conn.commit()
 
@@ -114,7 +120,8 @@ def search_invoice_to_pay(
             balance,
             last_payment_date,
             status,
-            due_date
+            due_date,
+            notes
         FROM payment_obligations
         WHERE record_type = 'OBLIGATION'
         {where_clause}
@@ -230,3 +237,226 @@ def apply_payment(
         "new_balance": new_balance,
         "status": new_status
     }
+
+# ============================================================
+# 4️⃣ MANUAL OBLIGATION
+# ============================================================
+@router.post("/manual")
+def create_manual_obligation(
+    payee_name: str,
+    obligation_type: str,
+    total: float,
+    currency: str,
+    reference: Optional[str] = None,
+    notes: Optional[str] = None,
+    payee_type: str = "OTHER",
+    conn=Depends(get_db)
+):
+    if total <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Total must be greater than zero"
+        )
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        cur.execute("""
+            INSERT INTO payment_obligations (
+                record_type,
+                payee_type,
+                payee_name,
+                obligation_type,
+                reference,
+                currency,
+                total,
+                balance,
+                status,
+                origin,
+                notes,
+                active,
+                created_at
+            )
+            VALUES (
+                'OBLIGATION',
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                'PENDING',
+                'MANUAL',
+                %s,
+                TRUE,
+                NOW()
+            )
+            RETURNING id
+        """, (
+            payee_type,
+            payee_name,
+            obligation_type,
+            reference,
+            currency,
+            total,
+            total,
+            notes
+        ))
+
+        new_id = cur.fetchone()["id"]
+        conn.commit()
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error creating manual obligation: {str(e)}"
+        )
+
+    return {
+        "message": "Manual obligation created successfully",
+        "id": new_id
+    }
+
+# ============================================================
+# 5️⃣ UPLOAD XML (FACTURA ELECTRÓNICA)
+# ============================================================
+@router.post("/upload/xml")
+def upload_invoice_xml(
+    file: UploadFile = File(...),
+    payee_name: str = Form(...),
+    reference: str = Form(...),
+    currency: str = Form(...),
+    total: float = Form(...),
+    notes: Optional[str] = Form(None),
+    conn=Depends(get_db)
+):
+    if total <= 0:
+        raise HTTPException(status_code=400, detail="Invalid total amount")
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    os.makedirs("storage/invoice_to_pay/xml", exist_ok=True)
+    filename = f"{reference}_{int(datetime.now().timestamp())}.xml"
+    filepath = os.path.join("storage/invoice_to_pay/xml", filename)
+
+    try:
+        # Guardar archivo
+        with open(filepath, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # Insertar obligación
+        cur.execute("""
+            INSERT INTO payment_obligations (
+                record_type,
+                payee_type,
+                payee_name,
+                obligation_type,
+                reference,
+                currency,
+                total,
+                balance,
+                status,
+                origin,
+                file_xml,
+                notes,
+                active,
+                created_at
+            )
+            VALUES (
+                'OBLIGATION',
+                'SUPPLIER',
+                %s,
+                'SUPPLIER_INVOICE',
+                %s,
+                %s,
+                %s,
+                %s,
+                'PENDING',
+                'UPLOAD',
+                %s,
+                %s,
+                TRUE,
+                NOW()
+            )
+        """, (
+            payee_name,
+            reference,
+            currency,
+            total,
+            total,
+            filepath,
+            notes
+        ))
+
+        conn.commit()
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"XML upload error: {str(e)}"
+        )
+
+    return {"message": "XML invoice uploaded successfully"}
+
+
+# ============================================================
+# 6️⃣ UPLOAD PDF (ADJUNTO)
+# ============================================================
+@router.post("/upload/pdf")
+def upload_invoice_pdf(
+    file: UploadFile = File(...),
+    reference: str = Form(...),
+    conn=Depends(get_db)
+):
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    os.makedirs("storage/invoice_to_pay/pdf", exist_ok=True)
+    filename = f"{reference}_{int(datetime.now().timestamp())}.pdf"
+    filepath = os.path.join("storage/invoice_to_pay/pdf", filename)
+
+    try:
+        # Guardar archivo
+        with open(filepath, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        # Insertar obligación mínima
+        cur.execute("""
+            INSERT INTO payment_obligations (
+                record_type,
+                obligation_type,
+                reference,
+                status,
+                origin,
+                file_pdf,
+                active,
+                created_at
+            )
+            VALUES (
+                'OBLIGATION',
+                'PDF_ONLY',
+                %s,
+                'PENDING',
+                'UPLOAD',
+                %s,
+                TRUE,
+                NOW()
+            )
+        """, (
+            reference,
+            filepath
+        ))
+
+        conn.commit()
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"PDF upload error: {str(e)}"
+        )
+
+    return {"message": "PDF uploaded successfully"}
+

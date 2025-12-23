@@ -23,7 +23,10 @@ router = APIRouter(
 def _sync_servicios_to_itp(cur):
     """
     Inserta honorarios de surveyores desde servicios
-    usando SOLO columnas válidas del modelo ITP
+    usando SOLO columnas válidas del modelo ITP.
+    Se asignan también issue_date y due_date:
+      - issue_date = fecha_fin
+      - due_date = fecha_fin + 15 días
     """
     cur.execute("""
         INSERT INTO payment_obligations (
@@ -36,6 +39,8 @@ def _sync_servicios_to_itp(cur):
             country,
             operation,
             service_id,
+            issue_date,
+            due_date,
             currency,
             total,
             balance,
@@ -54,6 +59,8 @@ def _sync_servicios_to_itp(cur):
             s.pais,
             s.operacion,
             s.consec,
+            s.fecha_fin AS issue_date,
+            (s.fecha_fin + INTERVAL '15 days') AS due_date,
             'USD',
             s.honorarios,
             s.honorarios,
@@ -66,6 +73,7 @@ def _sync_servicios_to_itp(cur):
             s.surveyor IS NOT NULL
             AND s.honorarios IS NOT NULL
             AND s.honorarios > 0
+            AND s.fecha_fin IS NOT NULL
             AND NOT EXISTS (
                 SELECT 1
                 FROM payment_obligations po
@@ -94,36 +102,37 @@ def search_invoice_to_pay(
     filters = []
     params = []
 
-    # =========================
-    # DEFAULT: excluir PAID
-    # =========================
-    if not status:
-        filters.append("status <> 'PAID'")
-    else:
+    # =================
+    # FILTRO POR ESTADO
+    # =================
+    # Si no se especifica, excluir PAID
+    if status:
         filters.append("status = %s")
         params.append(status)
+    else:
+        filters.append("status <> 'PAID'")
 
-    # =========================
-    # OBLIGATION TYPE
-    # =========================
+    # =================================
+    # FILTRO POR TIPO DE OBLIGACIÓN
+    # =================================
     if obligation_type:
-        if obligation_type == "SURVEYOR":
+        if obligation_type.upper() == "SURVEYOR":
             filters.append("origin = 'SERVICIOS'")
-        elif obligation_type == "FACTURA_ELECTRONICA":
+        elif obligation_type.upper() == "FACTURA_ELECTRONICA":
             filters.append("origin = 'XML'")
-        elif obligation_type == "MANUAL":
+        elif obligation_type.upper() == "MANUAL":
             filters.append("origin = 'MANUAL'")
 
-    # =========================
-    # PAYEE
-    # =========================
+    # ================
+    # FILTRO BENEFICIARIO
+    # ================
     if payee:
         filters.append("payee_name ILIKE %s")
         params.append(f"%{payee}%")
 
-    # =========================
-    # ISSUE DATE RANGE
-    # =========================
+    # ================================
+    # FILTROS POR RANGOS DE FECHA
+    # ================================
     if issue_date_from:
         filters.append("issue_date >= %s")
         params.append(issue_date_from)
@@ -132,9 +141,6 @@ def search_invoice_to_pay(
         filters.append("issue_date <= %s")
         params.append(issue_date_to)
 
-    # =========================
-    # PAYMENT DATE RANGE
-    # =========================
     if payment_date_from:
         filters.append("last_payment_date >= %s")
         params.append(payment_date_from)
@@ -143,16 +149,19 @@ def search_invoice_to_pay(
         filters.append("last_payment_date <= %s")
         params.append(payment_date_to)
 
-    where_clause = " AND ".join(filters)
-    if where_clause:
-        where_clause = "WHERE " + where_clause
+    where_clause = ""
+    if filters:
+        where_clause = "WHERE " + " AND ".join(filters)
 
+    # ========================================
+    # SELECT FINAL NORMALIZADO
+    # ========================================
     sql = f"""
         SELECT
             id,
             payee_name,
 
-            -- 🧠 OBLIGATION
+            -- 🧠 obligation_type normalizado
             CASE
                 WHEN origin = 'SERVICIOS' THEN 'SURVEYOR'
                 WHEN origin = 'XML' THEN 'FACTURA_ELECTRONICA'
@@ -160,7 +169,7 @@ def search_invoice_to_pay(
                 ELSE obligation_type
             END AS obligation_type,
 
-            -- 📌 REFERENCIA
+            -- 📌 reference limpio
             CASE
                 WHEN origin = 'SERVICIOS' THEN notes
                 ELSE reference
@@ -168,7 +177,7 @@ def search_invoice_to_pay(
 
             vessel,
 
-            -- 🌍 PAÍS
+            -- 🌍 País (Costa Rica si XML)
             CASE
                 WHEN origin = 'XML' THEN 'Costa Rica'
                 ELSE country
@@ -180,12 +189,9 @@ def search_invoice_to_pay(
             balance,
             status,
             last_payment_date,
-
-            -- 📅 ISSUE DATE
             issue_date,
-
-            -- ⏳ DUE DATE
-            due_date
+            due_date,
+            notes
 
         FROM payment_obligations
         {where_clause}
@@ -204,7 +210,7 @@ def search_invoice_to_pay(
     return {"data": rows}
 
 # ============================================================
-# 2️⃣ KPIs
+# 2️⃣ KPIs — CONVERSIÓN CRC → USD (TC = 500)
 # ============================================================
 @router.get("/kpis")
 def invoice_to_pay_kpis(conn=Depends(get_db)):
@@ -212,8 +218,39 @@ def invoice_to_pay_kpis(conn=Depends(get_db)):
 
     cur.execute("""
         SELECT
-            COALESCE(SUM(CASE WHEN status IN ('PENDING','PARTIAL') THEN balance END), 0) AS pending,
-            COALESCE(SUM(CASE WHEN status IN ('PARTIAL','PAID') THEN (total - balance) END), 0) AS paid,
+            -- =========================
+            -- PENDING (USD normalizado)
+            -- =========================
+            COALESCE(
+                SUM(
+                    CASE
+                        WHEN status IN ('PENDING','PARTIAL') THEN
+                            CASE
+                                WHEN currency = 'CRC' THEN balance / 500.0
+                                ELSE balance
+                            END
+                    END
+                ), 0
+            ) AS pending_usd,
+
+            -- =========================
+            -- PAID (USD normalizado)
+            -- =========================
+            COALESCE(
+                SUM(
+                    CASE
+                        WHEN status IN ('PARTIAL','PAID') THEN
+                            CASE
+                                WHEN currency = 'CRC' THEN (total - balance) / 500.0
+                                ELSE (total - balance)
+                            END
+                    END
+                ), 0
+            ) AS paid_usd,
+
+            -- =========================
+            -- DPO (NO requiere moneda)
+            -- =========================
             ROUND(
                 AVG(
                     CASE
@@ -224,6 +261,10 @@ def invoice_to_pay_kpis(conn=Depends(get_db)):
                     END
                 ), 2
             ) AS dpo,
+
+            -- =========================
+            -- OVERDUE COUNT
+            -- =========================
             COUNT(
                 CASE
                     WHEN balance > 0
@@ -231,18 +272,40 @@ def invoice_to_pay_kpis(conn=Depends(get_db)):
                     AND due_date < CURRENT_DATE
                     THEN 1
                 END
-            ) AS overdue
+            ) AS overdue,
+
+            -- =========================
+            -- OVERDUE AMOUNT (USD)
+            -- =========================
+            COALESCE(
+                SUM(
+                    CASE
+                        WHEN balance > 0
+                        AND due_date IS NOT NULL
+                        AND due_date < CURRENT_DATE
+                        THEN
+                            CASE
+                                WHEN currency = 'CRC' THEN balance / 500.0
+                                ELSE balance
+                            END
+                    END
+                ), 0
+            ) AS overdue_amount_usd
+
         FROM payment_obligations
         WHERE record_type = 'OBLIGATION'
     """)
 
-    pending, paid, dpo, overdue = cur.fetchone()
+    pending, paid, dpo, overdue, overdue_amount = cur.fetchone()
 
     return {
-        "pending": pending,
-        "paid": paid,
+        "pending": round(pending, 2),
+        "paid": round(paid, 2),
         "dpo": dpo,
-        "overdue": overdue
+        "overdue": overdue,
+        "overdue_amount": round(overdue_amount, 2),
+        "currency": "USD",
+        "exchange_rate": 500
     }
 
 # ============================================================
@@ -384,33 +447,70 @@ def create_manual_obligation(
     }
 
 # ============================================================
-# 5️⃣ UPLOAD XML (FACTURA ELECTRÓNICA)
+# 📥 UPLOAD XML (FACTURA ELECTRÓNICA) — CON ISSUE_DATE / DUE_DATE
 # ============================================================
 @router.post("/upload/xml")
 def upload_invoice_xml(
     file: UploadFile = File(...),
-    payee_name: str = Form(...),
-    reference: str = Form(...),
-    currency: str = Form(...),
-    total: float = Form(...),
-    notes: Optional[str] = Form(None),
     conn=Depends(get_db)
 ):
-    if total <= 0:
-        raise HTTPException(status_code=400, detail="Invalid total amount")
-
+    """
+    Carga un XML de factura electrónica y lo inserta en payment_obligations
+    con issue_date y due_date según reglas de negocio:
+      - issue_date: FechaEmision del XML
+      - due_date: FechaVencimiento si existe
+                  si no, issue_date + 30 días
+    """
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
+    # Guardar el archivo
     os.makedirs("storage/invoice_to_pay/xml", exist_ok=True)
-    filename = f"{reference}_{int(datetime.now().timestamp())}.xml"
+    timestamp = int(datetime.now().timestamp())
+    filename = f"xml_{timestamp}_{file.filename}"
     filepath = os.path.join("storage/invoice_to_pay/xml", filename)
 
-    try:
-        # Guardar archivo
-        with open(filepath, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+    with open(filepath, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-        # Insertar obligación
+    # Leer XML
+    try:
+        tree = ET.parse(filepath)
+        root = tree.getroot()
+        ns = {"fe": root.tag.split("}")[0].strip("{")}
+
+        # ----------------------------
+        # Campos del XML
+        # ----------------------------
+        clave = root.find(".//fe:Clave", ns).text
+        fecha_emision = root.find(".//fe:FechaEmision", ns).text.split("T")[0]
+        emisor = root.find(".//fe:Nombre", ns).text
+
+        moneda = root.find(".//fe:CodigoMoneda", ns).text
+        total = float(root.find(".//fe:TotalComprobante", ns).text)
+
+        # Intentar leer término de pago si existe en XML
+        termino = root.find(".//fe:PlazoCredito", ns)
+        if termino is not None and termino.text.isdigit():
+            term_days = int(termino.text)
+        else:
+            term_days = 30
+
+        # ----------------------------
+        # Fechas de emisión y vencimiento
+        # ----------------------------
+        issue_date_val = date.fromisoformat(fecha_emision)
+        due_date_val = issue_date_val + timedelta(days=term_days)
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Error parsing XML: {str(e)}"
+        )
+
+    # ----------------------------
+    # Insertar en la tabla
+    # ----------------------------
+    try:
         cur.execute("""
             INSERT INTO payment_obligations (
                 record_type,
@@ -418,6 +518,9 @@ def upload_invoice_xml(
                 payee_name,
                 obligation_type,
                 reference,
+                issue_date,
+                due_date,
+                country,
                 currency,
                 total,
                 balance,
@@ -432,8 +535,11 @@ def upload_invoice_xml(
                 'OBLIGATION',
                 'SUPPLIER',
                 %s,
-                'SUPPLIER_INVOICE',
+                'FACTURA_ELECTRONICA',
                 %s,
+                %s,
+                %s,
+                'Costa Rica',
                 %s,
                 %s,
                 %s,
@@ -445,56 +551,73 @@ def upload_invoice_xml(
                 NOW()
             )
         """, (
-            payee_name,
-            reference,
-            currency,
+            emisor,
+            clave,
+            issue_date_val,
+            due_date_val,
+            moneda,
             total,
             total,
             filepath,
-            notes
+            f"Factura electrónica {clave}"
         ))
-
         conn.commit()
-
     except Exception as e:
         conn.rollback()
         raise HTTPException(
             status_code=500,
-            detail=f"XML upload error: {str(e)}"
+            detail=f"Error inserting obligation from XML: {str(e)}"
         )
 
-    return {"message": "XML invoice uploaded successfully"}
+    return {"message": "XML invoice uploaded and obligation created successfully"}
 
 
 # ============================================================
-# 6️⃣ UPLOAD PDF (ADJUNTO)
+# 📥 UPLOAD PDF (ADJUNTO) con issue_date y due_date
 # ============================================================
 @router.post("/upload/pdf")
 def upload_invoice_pdf(
     file: UploadFile = File(...),
     reference: str = Form(...),
+    issue_date: Optional[date] = Form(None),
+    due_date: Optional[date] = Form(None),
     conn=Depends(get_db)
 ):
+    """
+    Carga un PDF y crea una obligación en payment_obligations
+    Usará la lógica:
+      - issue_date: si provisto por UI, si no, fecha actual
+      - due_date: si provisto por UI, si no, same day (contado)
+    """
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
+    # Normalizar fechas
+    issue_val = issue_date or date.today()
+    due_val = due_date or issue_val
+
     os.makedirs("storage/invoice_to_pay/pdf", exist_ok=True)
-    filename = f"{reference}_{int(datetime.now().timestamp())}.pdf"
+    timestamp = int(datetime.now().timestamp())
+    filename = f"pdf_{timestamp}_{file.filename}"
     filepath = os.path.join("storage/invoice_to_pay/pdf", filename)
 
     try:
-        # Guardar archivo
         with open(filepath, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-        # Insertar obligación mínima
         cur.execute("""
             INSERT INTO payment_obligations (
                 record_type,
                 obligation_type,
                 reference,
+                issue_date,
+                due_date,
+                currency,
+                total,
+                balance,
                 status,
                 origin,
                 file_pdf,
+                notes,
                 active,
                 created_at
             )
@@ -502,15 +625,27 @@ def upload_invoice_pdf(
                 'OBLIGATION',
                 'PDF_ONLY',
                 %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
                 'PENDING',
                 'UPLOAD',
+                %s,
                 %s,
                 TRUE,
                 NOW()
             )
         """, (
             reference,
-            filepath
+            issue_val,
+            due_val,
+            "USD",         # Por defecto USD (puedes ajustar luego)
+            0.0,           # Sin monto explícito para PDF
+            0.0,
+            filepath,
+            f"PDF adjunto para {reference}"
         ))
 
         conn.commit()
@@ -522,5 +657,5 @@ def upload_invoice_pdf(
             detail=f"PDF upload error: {str(e)}"
         )
 
-    return {"message": "PDF uploaded successfully"}
+    return {"message": "PDF uploaded and obligation created successfully"}
 

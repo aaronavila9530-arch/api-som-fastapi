@@ -164,7 +164,7 @@ def search_invoice_to_pay(
 
             -- 🧠 obligation_type normalizado según origen
             CASE
-                WHEN origin = 'SERVICIOS' THEN 'Surveyors'
+                WHEN (origin ILIKE '%SERVICIO%' OR obligation_type = 'SURVEYOR_FEE') THEN 'Surveyors'
                 WHEN origin = 'XML' THEN 'FACTURA_ELECTRONICA'
                 WHEN origin = 'MANUAL' THEN 'MANUAL'
                 ELSE obligation_type
@@ -172,7 +172,7 @@ def search_invoice_to_pay(
 
             -- 📌 reference limpio
             CASE
-                WHEN origin = 'SERVICIOS' THEN notes
+                WHEN (origin ILIKE '%SERVICIO%' OR obligation_type = 'SURVEYOR_FEE') THEN notes
                 ELSE reference
             END AS reference,
 

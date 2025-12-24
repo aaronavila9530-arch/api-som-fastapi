@@ -36,143 +36,33 @@ def _safe_int(v, default=0) -> int:
         return default
 
 
+# ============================================================
+# POST /collections/post-to-accounting
+# Genera asientos contables para facturas existentes (y futuras que caigan a collections)
+# ============================================================
 @router.post("/post-to-accounting")
-def post_collections_to_accounting(conn=Depends(get_db)):
-
-    print("🔥 POST /collections/post-to-accounting EJECUTADO")
-    raise HTTPException(418, "I AM THE REAL COLLECTIONS ROUTER")
-
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-
+def post_collections_to_accounting(conn=Depends(get_db)) -> dict:
+    """
+    Sincroniza collections → accounting:
+    - Inserta accounting_entries + accounting_lines
+    - IVA para Costa Rica (total/1.13)
+    - No duplica: valida por origin='COLLECTIONS' y origin_id=collections.id
+    """
     try:
-        # ====================================================
-        # 1️⃣ Collections SIN asiento contable
-        # ====================================================
-        cur.execute("""
-            SELECT *
-            FROM collections c
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM accounting_entries e
-                WHERE e.origin = 'COLLECTIONS'
-                  AND e.origin_id = c.id
-            )
-        """)
+        from services.accounting_auto import sync_collections_to_accounting
 
-        rows = cur.fetchall()
-        creados = 0
-
-        for c in rows:
-
-            total = float(c["total"] or 0)
-            if total <= 0:
-                continue
-
-            numero = c["numero_documento"]
-            fecha = c["fecha_emision"]
-            period = fecha.strftime("%Y-%m")
-
-            # ====================================================
-            # 2️⃣ País desde servicios
-            # ====================================================
-            cur.execute("""
-                SELECT pais
-                FROM servicios
-                WHERE factura = %s
-                LIMIT 1
-            """, (numero,))
-            srv = cur.fetchone()
-            pais = (srv["pais"] if srv else "").strip().lower()
-
-            # ====================================================
-            # 3️⃣ IVA
-            # ====================================================
-            if pais == "costa rica":
-                subtotal = round(total / 1.13, 2)
-                iva = round(total - subtotal, 2)
-            else:
-                subtotal = total
-                iva = 0
-
-            # ====================================================
-            # 4️⃣ CREAR CABECERA CONTABLE (🔥 CLAVE)
-            # ====================================================
-            cur.execute("""
-                INSERT INTO accounting_entries
-                    (entry_date, period, description, origin, origin_id, created_at)
-                VALUES (%s, %s, %s, 'COLLECTIONS', %s, NOW())
-                RETURNING id
-            """, (
-                fecha,
-                period,
-                f"Factura {numero}",
-                c["id"]
-            ))
-
-            entry_id = cur.fetchone()["id"]
-
-            # ====================================================
-            # 5️⃣ CxC (DEBE)
-            # ====================================================
-            cur.execute("""
-                INSERT INTO accounting_lines
-                    (entry_id, account_code, account_name, debit, credit, line_description, created_at)
-                VALUES (%s, %s, %s, %s, 0, %s, NOW())
-            """, (
-                entry_id,
-                "1101",
-                "Cuentas por cobrar",
-                total,
-                f"From Collections {numero}"
-            ))
-
-            # ====================================================
-            # 6️⃣ Ingresos (HABER)
-            # ====================================================
-            cur.execute("""
-                INSERT INTO accounting_lines
-                    (entry_id, account_code, account_name, debit, credit, line_description, created_at)
-                VALUES (%s, %s, %s, 0, %s, %s, NOW())
-            """, (
-                entry_id,
-                "4101",
-                "Ingresos por servicios",
-                subtotal,
-                f"From Collections {numero}"
-            ))
-
-            # ====================================================
-            # 7️⃣ IVA por pagar (CR)
-            # ====================================================
-            if iva > 0:
-                cur.execute("""
-                    INSERT INTO accounting_lines
-                        (entry_id, account_code, account_name, debit, credit, line_description, created_at)
-                    VALUES (%s, %s, %s, 0, %s, %s, NOW())
-                """, (
-                    entry_id,
-                    "2108",
-                    "IVA por pagar",
-                    iva,
-                    f"From Collections {numero}"
-                ))
-
-            creados += 1
-
-        conn.commit()
+        # Ejecuta sincronización real
+        sync_collections_to_accounting(conn)
 
         return {
             "status": "ok",
-            "entries_created": creados
+            "message": "Collections posteadas a Accounting (entries + lines)"
         }
 
     except Exception as e:
-        conn.rollback()
-        print("❌ ERROR:", repr(e))
+        if conn:
+            conn.rollback()
         raise HTTPException(500, repr(e))
-
-    finally:
-        cur.close()
 # ============================================================
 # GET /collections/search
 # Búsqueda de cuentas por cobrar (Collections)

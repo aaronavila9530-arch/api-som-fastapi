@@ -40,6 +40,7 @@ def _safe_int(v, default=0) -> int:
 def post_collections_to_accounting(conn=Depends(get_db)):
 
     print("🔥 POST /collections/post-to-accounting EJECUTADO")
+    raise HTTPException(418, "I AM THE REAL COLLECTIONS ROUTER")
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 

@@ -39,81 +39,132 @@ def _safe_int(v, default=0) -> int:
 # ============================================================
 # POST /collections/post-to-accounting
 # Genera asientos contables para facturas existentes
+# (modo robusto / defensivo)
 # ============================================================
 @router.post("/post-to-accounting")
 def post_collections_to_accounting(conn=Depends(get_db)):
 
     from services.accounting_auto import create_accounting_entry
     from psycopg2.extras import RealDictCursor
+    from datetime import date
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        # 1️⃣ Traer facturas SIN asiento contable
+        # ====================================================
+        # 1️⃣ Traer TODAS las collections SIN asiento contable
+        #    (sin asumir estados, sin filtros frágiles)
+        # ====================================================
         cur.execute("""
             SELECT
-                c.id,                     -- 🔥 ID REAL DE COLLECTIONS
+                c.id,
                 c.numero_documento,
                 c.fecha_emision,
                 c.moneda,
                 c.total
             FROM collections c
-            LEFT JOIN accounting_entries a
-              ON a.origin = 'COLLECTIONS'
-             AND a.origin_id = c.id       -- 🔥 MATCH CORRECTO
-            WHERE a.id IS NULL
-              AND c.estado_factura <> 'WRITE_OFF'
+            WHERE NOT EXISTS (
+                SELECT 1
+                FROM accounting_entries a
+                WHERE a.origin = 'COLLECTIONS'
+                  AND a.origin_id = c.id
+            )
         """)
 
         facturas = cur.fetchall()
+
+        if not facturas:
+            return {
+                "status": "ok",
+                "entries_created": 0,
+                "message": "No hay collections pendientes de contabilizar"
+            }
+
         creados = 0
+        errores = []
 
+        # ====================================================
+        # 2️⃣ Crear asientos contables uno por uno
+        # ====================================================
         for f in facturas:
-            collection_id = f["id"]
-            numero = f["numero_documento"]
-            fecha_emision = f["fecha_emision"]
-            total = float(f["total"] or 0)
-            period = fecha_emision.strftime("%Y-%m")
 
-            lines = [
-                {
-                    "account_code": "1101",
-                    "account_name": "Cuentas por cobrar",
-                    "debit": total,
-                    "credit": 0,
-                    "description": f"Factura {numero}"
-                },
-                {
-                    "account_code": "4101",
-                    "account_name": "Ingresos por servicios",
-                    "debit": 0,
-                    "credit": total,
-                    "description": f"Ingreso factura {numero}"
-                }
-            ]
+            try:
+                collection_id = f["id"]
+                numero = f.get("numero_documento") or f"COL-{collection_id}"
 
-            create_accounting_entry(
-                conn=conn,
-                entry_date=fecha_emision,
-                period=period,
-                description=f"Factura {numero}",
-                origin="COLLECTIONS",
-                origin_id=collection_id,   # 🔥 ID, NO número
-                lines=lines
-            )
+                # ---------------------------
+                # Fecha segura
+                # ---------------------------
+                fecha_emision = f.get("fecha_emision") or date.today()
+                period = fecha_emision.strftime("%Y-%m")
 
-            creados += 1
+                # ---------------------------
+                # Total seguro
+                # ---------------------------
+                try:
+                    total = float(f.get("total") or 0)
+                except Exception:
+                    total = 0
+
+                # No tiene sentido crear asiento en 0
+                if total <= 0:
+                    continue
+
+                # ====================================================
+                # Líneas contables (partida doble)
+                # ====================================================
+                lines = [
+                    {
+                        "account_code": "1101",
+                        "account_name": "Cuentas por cobrar",
+                        "debit": total,
+                        "credit": 0,
+                        "description": f"Factura {numero}"
+                    },
+                    {
+                        "account_code": "4101",
+                        "account_name": "Ingresos por servicios",
+                        "debit": 0,
+                        "credit": total,
+                        "description": f"Ingreso factura {numero}"
+                    }
+                ]
+
+                create_accounting_entry(
+                    conn=conn,
+                    entry_date=fecha_emision,
+                    period=period,
+                    description=f"Factura {numero}",
+                    origin="COLLECTIONS",
+                    origin_id=collection_id,
+                    lines=lines,
+                    created_by="SYSTEM"
+                )
+
+                creados += 1
+
+            except Exception as e:
+                # No rompe todo el proceso por una factura dañada
+                errores.append({
+                    "collection_id": f.get("id"),
+                    "error": str(e)
+                })
 
         conn.commit()
 
         return {
             "status": "ok",
-            "entries_created": creados
+            "entries_created": creados,
+            "entries_failed": len(errores),
+            "errors": errores
         }
 
     except Exception as e:
         conn.rollback()
-        raise HTTPException(500, str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error sincronizando collections a accounting: {repr(e)}"
+        )
 
     finally:
         cur.close()

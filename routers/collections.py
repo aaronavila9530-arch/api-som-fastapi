@@ -36,112 +36,44 @@ def _safe_int(v, default=0) -> int:
         return default
 
 
-@router.post("/sync")
-def sync_collections(
-    cliente: Optional[str] = Query(None),
-    solo_pendientes: bool = Query(True),
-    conn=Depends(get_db)
-):
-    """
-    Sincroniza facturas desde invoicing → collections
-    y crea AUTOMÁTICAMENTE el asiento contable CxC.
-    """
-
-    if not conn:
-        raise HTTPException(500, "No DB connection")
+# ============================================================
+# POST /collections/post-to-accounting
+# Genera asientos contables para facturas existentes
+# ============================================================
+@router.post("/post-to-accounting")
+def post_collections_to_accounting(conn=Depends(get_db)):
 
     from services.accounting_auto import create_accounting_entry
+    from psycopg2.extras import RealDictCursor
+    from datetime import date
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        filtros = []
-        params = {}
-
-        if cliente and cliente.upper() != "ALL":
-            filtros.append("(i.codigo_cliente = %(c)s OR i.nombre_cliente ILIKE %(cl)s)")
-            params["c"] = cliente
-            params["cl"] = f"%{cliente}%"
-
-        if solo_pendientes:
-            filtros.append("COALESCE(i.estado,'EMITIDA') <> 'PAGADA'")
-
-        where_sql = "WHERE " + " AND ".join(filtros) if filtros else ""
-
-        cur.execute(f"""
+        # 1️⃣ Traer facturas SIN asiento contable
+        cur.execute("""
             SELECT
-                i.numero_documento,
-                i.codigo_cliente,
-                i.nombre_cliente,
-                i.fecha_emision,
-                i.moneda,
-                i.total
-            FROM invoicing i
-            {where_sql}
-        """, params)
+                c.numero_documento,
+                c.fecha_emision,
+                c.moneda,
+                c.total
+            FROM collections c
+            LEFT JOIN accounting_entries a
+              ON a.origin = 'COLLECTIONS'
+             AND a.origin_id = c.numero_documento
+            WHERE a.id IS NULL
+              AND c.estado_factura <> 'WRITE_OFF'
+        """)
 
         facturas = cur.fetchall()
-        synced = 0
+        creados = 0
 
         for f in facturas:
-            numero = str(f["numero_documento"]).strip()
-            if not numero:
-                continue
-
-            total = float(f["total"] or 0)
+            numero = f["numero_documento"]
             fecha_emision = f["fecha_emision"]
+            total = float(f["total"] or 0)
             period = fecha_emision.strftime("%Y-%m")
 
-            # --------------------------------------------------
-            # 1️⃣ VALIDAR SI EXISTE EN COLLECTIONS
-            # --------------------------------------------------
-            cur.execute("""
-                SELECT 1 FROM collections
-                WHERE numero_documento = %s
-            """, (numero,))
-            existe_collections = cur.fetchone() is not None
-
-            if not existe_collections:
-                cur.execute("""
-                    INSERT INTO collections (
-                        numero_documento,
-                        codigo_cliente,
-                        nombre_cliente,
-                        fecha_emision,
-                        moneda,
-                        total,
-                        saldo_pendiente,
-                        estado_factura,
-                        disputada
-                    ) VALUES (
-                        %s,%s,%s,%s,%s,%s,%s,'PENDIENTE_PAGO',false
-                    )
-                """, (
-                    numero,
-                    f["codigo_cliente"],
-                    f["nombre_cliente"],
-                    fecha_emision,
-                    f["moneda"],
-                    total,
-                    total
-                ))
-
-            # --------------------------------------------------
-            # 2️⃣ VALIDAR SI YA EXISTE ASIENTO CONTABLE
-            # --------------------------------------------------
-            cur.execute("""
-                SELECT 1 FROM accounting_entries
-                WHERE origin = 'COLLECTIONS'
-                  AND origin_id = %s
-            """, (numero,))
-            existe_asiento = cur.fetchone() is not None
-
-            if existe_asiento:
-                continue  # ✅ ya está contabilizado
-
-            # --------------------------------------------------
-            # 3️⃣ CREAR ASIENTO CONTABLE
-            # --------------------------------------------------
             lines = [
                 {
                     "account_code": "1101",
@@ -169,10 +101,14 @@ def sync_collections(
                 lines=lines
             )
 
-            synced += 1
+            creados += 1
 
         conn.commit()
-        return {"status": "ok", "synced": synced}
+
+        return {
+            "status": "ok",
+            "entries_created": creados
+        }
 
     except Exception as e:
         conn.rollback()

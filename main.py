@@ -28,6 +28,7 @@ from routers.dispute_management import router as dispute_management_router
 from routers.dispute_notes import router as dispute_notes_router
 from routers.disputa import router as disputa_router
 from routers.invoice_to_pay import router as invoice_to_pay_router
+from routers.accounting import router as accounting_router
 
 
 
@@ -120,6 +121,7 @@ app.include_router(dispute_management_router)
 app.include_router(dispute_notes_router)
 app.include_router(disputa_router)
 app.include_router(invoice_to_pay_router)
+app.include_router(accounting_router)
 
 # ============================================================
 # EJECUCIÓN LOCAL

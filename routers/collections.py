@@ -3,6 +3,7 @@ from psycopg2.extras import RealDictCursor
 from typing import Optional
 from datetime import date, timedelta
 
+
 from database import get_db
 
 router = APIRouter(
@@ -38,6 +39,7 @@ def _safe_int(v, default=0) -> int:
 # ============================================================
 # POST /collections/sync
 # Copia facturas emitidas desde invoicing a collections
+# y genera asiento contable automático
 # ============================================================
 @router.post("/sync")
 def sync_collections(
@@ -52,7 +54,8 @@ def sync_collections(
     conn=Depends(get_db)
 ):
     """
-    Sincroniza (upsert) facturas desde 'invoicing' hacia 'collections'.
+    Sincroniza (upsert) facturas desde 'invoicing' hacia 'collections'
+    y crea automáticamente el asiento contable (CxC).
     """
 
     if not conn:
@@ -77,6 +80,9 @@ def sync_collections(
 
         where_sql = "WHERE " + " AND ".join(filtros) if filtros else ""
 
+        # --------------------------------------------------
+        # FACTURAS DESDE INVOICING
+        # --------------------------------------------------
         cur.execute(
             f"""
             SELECT
@@ -89,12 +95,7 @@ def sync_collections(
                 i.moneda,
                 i.total,
                 i.estado,
-                i.termino_pago,
-                i.num_informe,
-                i.buque_contenedor,
-                i.operacion,
-                i.periodo_operacion,
-                i.descripcion_servicio
+                i.termino_pago
             FROM invoicing i
             {where_sql}
             ORDER BY i.fecha_emision DESC
@@ -103,7 +104,6 @@ def sync_collections(
         )
 
         facturas = cur.fetchall()
-
         if not facturas:
             return {"status": "ok", "synced": 0}
 
@@ -116,12 +116,16 @@ def sync_collections(
                 continue
 
             codigo_cliente = (f.get("codigo_cliente") or "").strip()
+            nombre_cliente = (f.get("nombre_cliente") or "").strip()
 
             try:
                 total_nuevo = float(f.get("total") or 0)
             except Exception:
                 total_nuevo = 0.0
 
+            # ----------------------------------------------
+            # DÍAS DE CRÉDITO
+            # ----------------------------------------------
             cur.execute("""
                 SELECT termino_pago
                 FROM cliente_credito
@@ -139,6 +143,9 @@ def sync_collections(
             aging = (hoy - fecha_venc).days
             bucket = _bucket_aging(aging)
 
+            # ----------------------------------------------
+            # PAÍS (para IVA)
+            # ----------------------------------------------
             cur.execute("""
                 SELECT pais
                 FROM servicios
@@ -149,59 +156,75 @@ def sync_collections(
             svc = cur.fetchone() or {}
             pais = svc.get("pais")
 
+            # ----------------------------------------------
+            # COLLECTIONS (INSERT SI NO EXISTE)
+            # ----------------------------------------------
             cur.execute("""
-                SELECT saldo_pendiente
+                SELECT id
                 FROM collections
                 WHERE numero_documento = %s
                 LIMIT 1
             """, (numero,))
-            existente = cur.fetchone()
+            col = cur.fetchone()
 
-            if existente:
-                continue  # ⚠️ NO generamos asiento si ya existe
-
-            cur.execute("""
-                INSERT INTO collections (
-                    numero_documento,
+            if not col:
+                cur.execute("""
+                    INSERT INTO collections (
+                        numero_documento,
+                        codigo_cliente,
+                        nombre_cliente,
+                        tipo_factura,
+                        tipo_documento,
+                        fecha_emision,
+                        fecha_vencimiento,
+                        moneda,
+                        total,
+                        saldo_pendiente,
+                        dias_credito,
+                        aging_dias,
+                        bucket_aging,
+                        estado_factura,
+                        disputada
+                    ) VALUES (
+                        %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s, %s, %s,
+                        'PENDIENTE_PAGO', false
+                    )
+                """, (
+                    numero,
                     codigo_cliente,
                     nombre_cliente,
-                    tipo_factura,
-                    tipo_documento,
+                    f.get("tipo_factura"),
+                    f.get("tipo_documento"),
                     fecha_emision,
-                    fecha_vencimiento,
-                    moneda,
-                    total,
-                    saldo_pendiente,
+                    fecha_venc,
+                    f.get("moneda"),
+                    total_nuevo,
+                    total_nuevo,
                     dias_credito,
-                    aging_dias,
-                    bucket_aging,
-                    estado_factura,
-                    disputada
-                ) VALUES (
-                    %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s,
-                    %s, %s, %s, %s,
-                    'PENDIENTE_PAGO', false
-                )
-            """, (
-                numero,
-                codigo_cliente,
-                f.get("nombre_cliente"),
-                f.get("tipo_factura"),
-                f.get("tipo_documento"),
-                fecha_emision,
-                fecha_venc,
-                f.get("moneda"),
-                total_nuevo,
-                total_nuevo,
-                dias_credito,
-                aging,
-                bucket
-            ))
+                    aging,
+                    bucket
+                ))
 
-            # ===============================
+            # ----------------------------------------------
+            # VERIFICAR SI YA EXISTE ASIENTO CONTABLE
+            # ----------------------------------------------
+            cur.execute("""
+                SELECT id
+                FROM accounting_entries
+                WHERE origin = 'COLLECTIONS'
+                  AND origin_id = %s
+                LIMIT 1
+            """, (numero,))
+            asiento = cur.fetchone()
+
+            if asiento:
+                continue  # asiento ya existe, no duplicar
+
+            # ----------------------------------------------
             # ASIENTO CONTABLE AUTOMÁTICO
-            # ===============================
+            # ----------------------------------------------
             if pais == "Costa Rica":
                 subtotal = total_nuevo / 1.13
                 iva = total_nuevo - subtotal
@@ -241,7 +264,7 @@ def sync_collections(
                 period=fecha_emision.strftime("%Y-%m"),
                 description=f"Factura {numero}",
                 origin="COLLECTIONS",
-                origin_id=None,
+                origin_id=numero,   # 🔑 CLAVE
                 lines=lines
             )
 
@@ -658,5 +681,7 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
     finally:
         if cur:
             cur.close()
+
+
 
 

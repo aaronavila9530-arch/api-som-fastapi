@@ -39,6 +39,8 @@ def _safe_int(v, default=0) -> int:
 @router.post("/post-to-accounting")
 def post_collections_to_accounting(conn=Depends(get_db)):
 
+    print("🔥🔥🔥 POST /collections/post-to-accounting EJECUTADO 🔥🔥🔥")
+
     from psycopg2.extras import RealDictCursor
     from datetime import date
 

@@ -75,14 +75,12 @@ def sync_collections(
                 i.nombre_cliente,
                 i.fecha_emision,
                 i.moneda,
-                i.total,
-                i.termino_pago
+                i.total
             FROM invoicing i
             {where_sql}
         """, params)
 
         facturas = cur.fetchall()
-        hoy = date.today()
         synced = 0
 
         for f in facturas:
@@ -95,38 +93,38 @@ def sync_collections(
             period = fecha_emision.strftime("%Y-%m")
 
             # --------------------------------------------------
-            # 1️⃣ INSERT EN COLLECTIONS (si no existe)
+            # 1️⃣ VALIDAR SI EXISTE EN COLLECTIONS
             # --------------------------------------------------
             cur.execute("""
                 SELECT 1 FROM collections
                 WHERE numero_documento = %s
             """, (numero,))
-            if cur.fetchone():
-                continue
+            existe_collections = cur.fetchone() is not None
 
-            cur.execute("""
-                INSERT INTO collections (
-                    numero_documento,
-                    codigo_cliente,
-                    nombre_cliente,
+            if not existe_collections:
+                cur.execute("""
+                    INSERT INTO collections (
+                        numero_documento,
+                        codigo_cliente,
+                        nombre_cliente,
+                        fecha_emision,
+                        moneda,
+                        total,
+                        saldo_pendiente,
+                        estado_factura,
+                        disputada
+                    ) VALUES (
+                        %s,%s,%s,%s,%s,%s,%s,'PENDIENTE_PAGO',false
+                    )
+                """, (
+                    numero,
+                    f["codigo_cliente"],
+                    f["nombre_cliente"],
                     fecha_emision,
-                    moneda,
+                    f["moneda"],
                     total,
-                    saldo_pendiente,
-                    estado_factura,
-                    disputada
-                ) VALUES (
-                    %s,%s,%s,%s,%s,%s,%s,'PENDIENTE_PAGO',false
-                )
-            """, (
-                numero,
-                f["codigo_cliente"],
-                f["nombre_cliente"],
-                fecha_emision,
-                f["moneda"],
-                total,
-                total
-            ))
+                    total
+                ))
 
             # --------------------------------------------------
             # 2️⃣ VALIDAR SI YA EXISTE ASIENTO CONTABLE
@@ -136,8 +134,10 @@ def sync_collections(
                 WHERE origin = 'COLLECTIONS'
                   AND origin_id = %s
             """, (numero,))
-            if cur.fetchone():
-                continue
+            existe_asiento = cur.fetchone() is not None
+
+            if existe_asiento:
+                continue  # ✅ ya está contabilizado
 
             # --------------------------------------------------
             # 3️⃣ CREAR ASIENTO CONTABLE

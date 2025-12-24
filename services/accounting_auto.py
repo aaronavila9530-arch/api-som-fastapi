@@ -59,3 +59,60 @@ def create_accounting_entry(
     conn.commit()
 
     return entry_id
+
+
+def sync_collections_to_accounting(conn):
+    """
+    Crea asientos contables para todas las collections
+    que aún no tienen asiento contable.
+    """
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("""
+        SELECT c.*
+        FROM collections c
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM accounting_entries ae
+            WHERE ae.origin = 'COLLECTIONS'
+              AND ae.origin_id = c.id
+        )
+    """)
+
+    collections = cur.fetchall()
+
+    for c in collections:
+
+        entry_date = c["fecha_emision"]
+        period = entry_date.strftime("%Y-%m")
+        description = f"Factura cliente {c['nombre_cliente']} – {c['numero_documento']}"
+
+        lines = [
+            {
+                "account_code": "103-01",
+                "account_name": "Cuentas por cobrar",
+                "debit": float(c["total"]),
+                "credit": 0,
+                "description": "Registro CxC"
+            },
+            {
+                "account_code": "401-01",
+                "account_name": "Ingresos por servicios",
+                "debit": 0,
+                "credit": float(c["total"]),
+                "description": "Ingreso por servicios"
+            }
+        ]
+
+        create_accounting_entry(
+            conn=conn,
+            entry_date=entry_date,
+            period=period,
+            description=description,
+            origin="COLLECTIONS",
+            origin_id=c["id"],
+            lines=lines,
+            created_by="SYSTEM"
+        )
+

@@ -45,7 +45,6 @@ def post_collections_to_accounting(conn=Depends(get_db)):
 
     from services.accounting_auto import create_accounting_entry
     from psycopg2.extras import RealDictCursor
-    from datetime import date
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -53,6 +52,7 @@ def post_collections_to_accounting(conn=Depends(get_db)):
         # 1️⃣ Traer facturas SIN asiento contable
         cur.execute("""
             SELECT
+                c.id,                     -- 🔥 ID REAL DE COLLECTIONS
                 c.numero_documento,
                 c.fecha_emision,
                 c.moneda,
@@ -60,7 +60,7 @@ def post_collections_to_accounting(conn=Depends(get_db)):
             FROM collections c
             LEFT JOIN accounting_entries a
               ON a.origin = 'COLLECTIONS'
-             AND a.origin_id = c.numero_documento
+             AND a.origin_id = c.id       -- 🔥 MATCH CORRECTO
             WHERE a.id IS NULL
               AND c.estado_factura <> 'WRITE_OFF'
         """)
@@ -69,6 +69,7 @@ def post_collections_to_accounting(conn=Depends(get_db)):
         creados = 0
 
         for f in facturas:
+            collection_id = f["id"]
             numero = f["numero_documento"]
             fecha_emision = f["fecha_emision"]
             total = float(f["total"] or 0)
@@ -97,7 +98,7 @@ def post_collections_to_accounting(conn=Depends(get_db)):
                 period=period,
                 description=f"Factura {numero}",
                 origin="COLLECTIONS",
-                origin_id=numero,
+                origin_id=collection_id,   # 🔥 ID, NO número
                 lines=lines
             )
 

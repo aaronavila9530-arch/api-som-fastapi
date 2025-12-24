@@ -455,3 +455,16 @@ def update_accounting_entry(
         "status": "ok",
         "message": "Asiento actualizado correctamente"
     }
+
+
+@router.post("/sync/collections")
+def sync_collections(conn=Depends(get_db)):
+    from services.accounting_auto import sync_collections_to_accounting
+
+    sync_collections_to_accounting(conn)
+
+    return {
+        "status": "ok",
+        "message": "Collections sincronizadas con Accounting"
+    }
+

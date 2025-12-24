@@ -786,4 +786,49 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
             cur.close()
 
 
+from services.accounting_auto import create_accounting_entry
+
+# después de insertar en collections
+if pais == "Costa Rica":
+    subtotal = total / 1.13
+    iva = total - subtotal
+else:
+    subtotal = total
+    iva = 0
+
+lines = [
+    {
+        "account_code": "1101",  # CxC
+        "account_name": "Cuentas por cobrar",
+        "debit": total,
+        "credit": 0,
+        "description": f"Factura {numero_documento}"
+    },
+    {
+        "account_code": "4101",  # Ingresos
+        "account_name": "Ingresos por servicios",
+        "debit": 0,
+        "credit": subtotal,
+        "description": f"Ingreso {numero_documento}"
+    }
+]
+
+if iva > 0:
+    lines.append({
+        "account_code": "2102",  # IVA por pagar
+        "account_name": "IVA por pagar",
+        "debit": 0,
+        "credit": iva,
+        "description": f"IVA {numero_documento}"
+    })
+
+create_accounting_entry(
+    conn=conn,
+    entry_date=date.today(),
+    period=period,
+    description=f"Factura {numero_documento}",
+    origin="COLLECTIONS",
+    origin_id=collection_id,
+    lines=lines
+)
 

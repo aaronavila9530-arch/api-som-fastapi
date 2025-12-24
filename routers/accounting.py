@@ -11,46 +11,89 @@ router = APIRouter(
 
 
 @router.get("/ledger")
-def search_ledger(
+def get_accounting_ledger(
     period: str | None = None,
     origin: str | None = None,
     conn=Depends(get_db)
 ):
+    """
+    Devuelve asientos contables agrupados por entry_id,
+    con sus líneas (debe / haber)
+    """
+
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    filters = []
+    conditions = []
     params = []
 
     if period:
-        filters.append("e.period = %s")
+        conditions.append("e.period = %s")
         params.append(period)
 
     if origin:
-        filters.append("e.origin = %s")
+        conditions.append("e.origin = %s")
         params.append(origin)
 
-    where = "WHERE " + " AND ".join(filters) if filters else ""
+    where_clause = ""
+    if conditions:
+        where_clause = "WHERE " + " AND ".join(conditions)
 
-    sql = f"""
+    query = f"""
         SELECT
             e.id AS entry_id,
             e.entry_date,
-            e.description,
+            e.period,
+            e.description AS entry_description,
             e.origin,
             e.origin_id,
+
+            l.id AS line_id,
             l.account_code,
             l.account_name,
             l.debit,
             l.credit,
             l.line_description
+
         FROM accounting_entries e
         JOIN accounting_lines l ON l.entry_id = e.id
-        {where}
-        ORDER BY e.entry_date DESC, e.id, l.id
+        {where_clause}
+        ORDER BY e.entry_date DESC, e.id DESC, l.id ASC
     """
 
-    cur.execute(sql, params)
-    return {"data": cur.fetchall()}
+    cur.execute(query, params)
+    rows = cur.fetchall()
+
+    # ======================================================
+    # AGRUPAR POR entry_id
+    # ======================================================
+    entries = {}
+
+    for row in rows:
+        entry_id = row["entry_id"]
+
+        if entry_id not in entries:
+            entries[entry_id] = {
+                "entry_id": entry_id,
+                "entry_date": row["entry_date"],
+                "period": row["period"],
+                "description": row["entry_description"],
+                "origin": row["origin"],
+                "origin_id": row["origin_id"],
+                "lines": []
+            }
+
+        entries[entry_id]["lines"].append({
+            "line_id": row["line_id"],
+            "account_code": row["account_code"],
+            "account_name": row["account_name"],
+            "debit": float(row["debit"] or 0),
+            "credit": float(row["credit"] or 0),
+            "line_description": row["line_description"]
+        })
+
+    return {
+        "data": list(entries.values())
+    }
 
 
 @router.post("/manual-entry")
@@ -167,3 +210,242 @@ def reverse_entry(entry_id: int, conn=Depends(get_db)):
 
     conn.commit()
     return {"status": "reversed", "reversal_entry_id": reversal_id}
+
+
+
+
+# ============================================================
+# CHART OF ACCOUNTS (Catalogo Contable)
+# ============================================================
+@router.get("/accounts")
+def get_accounting_accounts(conn=Depends(get_db)):
+    """
+    Devuelve el catálogo contable desde accounting_ledger
+    para uso en combobox (UI / Popup de ajustes)
+    """
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    query = """
+        SELECT DISTINCT
+            account_code,
+            account_name,
+            account_type,
+            account_level,
+            parent_account
+        FROM accounting_ledger
+        WHERE account_code IS NOT NULL
+        ORDER BY account_code
+    """
+
+    cur.execute(query)
+    rows = cur.fetchall()
+
+    return {
+        "data": rows
+    }
+
+
+# ============================================================
+# GET SINGLE ACCOUNTING ENTRY (FOR POPUP EDIT)
+# ============================================================
+@router.get("/entry/{entry_id}")
+def get_accounting_entry(
+    entry_id: int,
+    conn=Depends(get_db)
+):
+    """
+    Devuelve un asiento contable completo (cabecera + líneas)
+    para edición en popup
+    """
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # --------------------------------------------------------
+    # 1. Traer cabecera
+    # --------------------------------------------------------
+    cur.execute("""
+        SELECT
+            id AS entry_id,
+            entry_date,
+            period,
+            description,
+            origin,
+            origin_id
+        FROM accounting_entries
+        WHERE id = %s
+    """, (entry_id,))
+
+    entry = cur.fetchone()
+
+    if not entry:
+        raise HTTPException(status_code=404, detail="Asiento no encontrado")
+
+    # --------------------------------------------------------
+    # 2. Traer líneas
+    # --------------------------------------------------------
+    cur.execute("""
+        SELECT
+            id AS line_id,
+            account_code,
+            account_name,
+            debit,
+            credit,
+            line_description
+        FROM accounting_lines
+        WHERE entry_id = %s
+        ORDER BY id
+    """, (entry_id,))
+
+    lines = cur.fetchall()
+
+    # --------------------------------------------------------
+    # 3. Respuesta final
+    # --------------------------------------------------------
+    return {
+        "entry_id": entry["entry_id"],
+        "entry_date": entry["entry_date"],
+        "period": entry["period"],
+        "description": entry["description"],
+        "origin": entry["origin"],
+        "origin_id": entry["origin_id"],
+        "lines": [
+            {
+                "line_id": l["line_id"],
+                "account_code": l["account_code"],
+                "account_name": l["account_name"],
+                "debit": float(l["debit"] or 0),
+                "credit": float(l["credit"] or 0),
+                "line_description": l["line_description"]
+            }
+            for l in lines
+        ]
+    }
+
+
+# ============================================================
+# UPDATE ACCOUNTING ENTRY (POPUP EDIT)
+# ============================================================
+@router.put("/entry/{entry_id}")
+def update_accounting_entry(
+    entry_id: int,
+    payload: dict,
+    conn=Depends(get_db)
+):
+    """
+    Actualiza descripción del asiento y líneas contables.
+    Valida partida doble.
+    """
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    description = payload.get("description")
+    lines = payload.get("lines", [])
+
+    if not lines:
+        raise HTTPException(status_code=400, detail="No se enviaron líneas")
+
+    # --------------------------------------------------------
+    # 1. VALIDACIONES CONTABLES
+    # --------------------------------------------------------
+    total_debit = 0
+    total_credit = 0
+
+    for line in lines:
+        debit = float(line.get("debit") or 0)
+        credit = float(line.get("credit") or 0)
+
+        if debit > 0 and credit > 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Una línea no puede tener Debe y Haber simultáneamente"
+            )
+
+        if debit < 0 or credit < 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Valores negativos no permitidos"
+            )
+
+        total_debit += debit
+        total_credit += credit
+
+    if round(total_debit, 2) != round(total_credit, 2):
+        raise HTTPException(
+            status_code=400,
+            detail="La partida no está balanceada (Debe ≠ Haber)"
+        )
+
+    # --------------------------------------------------------
+    # 2. VALIDAR QUE EL ASIENTO EXISTE
+    # --------------------------------------------------------
+    cur.execute(
+        "SELECT id FROM accounting_entries WHERE id = %s",
+        (entry_id,)
+    )
+    if not cur.fetchone():
+        raise HTTPException(status_code=404, detail="Asiento no encontrado")
+
+    # --------------------------------------------------------
+    # 3. ACTUALIZAR CABECERA
+    # --------------------------------------------------------
+    if description is not None:
+        cur.execute("""
+            UPDATE accounting_entries
+            SET description = %s
+            WHERE id = %s
+        """, (description, entry_id))
+
+    # --------------------------------------------------------
+    # 4. ACTUALIZAR LÍNEAS
+    # --------------------------------------------------------
+    for line in lines:
+        line_id = line.get("line_id")
+
+        if not line_id:
+            raise HTTPException(
+                status_code=400,
+                detail="line_id es obligatorio"
+            )
+
+        # validar cuenta contable
+        cur.execute("""
+            SELECT account_name
+            FROM accounting_ledger
+            WHERE account_code = %s
+            LIMIT 1
+        """, (line["account_code"],))
+
+        acc = cur.fetchone()
+        if not acc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cuenta contable inválida: {line['account_code']}"
+            )
+
+        cur.execute("""
+            UPDATE accounting_lines
+            SET
+                account_code = %s,
+                account_name = %s,
+                debit = %s,
+                credit = %s,
+                line_description = %s
+            WHERE id = %s
+              AND entry_id = %s
+        """, (
+            line["account_code"],
+            acc["account_name"],
+            line.get("debit", 0),
+            line.get("credit", 0),
+            line.get("line_description"),
+            line_id,
+            entry_id
+        ))
+
+    conn.commit()
+
+    return {
+        "status": "ok",
+        "message": "Asiento actualizado correctamente"
+    }

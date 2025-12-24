@@ -23,7 +23,7 @@ def create_accounting_entry(
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    # 1. Insert entry
+    # 1️⃣ Insert entry
     cur.execute("""
         INSERT INTO accounting_entries
             (entry_date, period, description, origin, origin_id, created_by)
@@ -40,7 +40,7 @@ def create_accounting_entry(
 
     entry_id = cur.fetchone()["id"]
 
-    # 2. Insert lines
+    # 2️⃣ Insert lines
     for line in lines:
         cur.execute("""
             INSERT INTO accounting_lines
@@ -54,5 +54,8 @@ def create_accounting_entry(
             line["credit"],
             line.get("description")
         ))
+
+    # 🔥🔥🔥 ESTA ES LA LÍNEA QUE FALTABA 🔥🔥🔥
+    conn.commit()
 
     return entry_id

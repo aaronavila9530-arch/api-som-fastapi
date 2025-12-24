@@ -62,10 +62,9 @@ def create_accounting_entry(
 
 
 def sync_collections_to_accounting(conn):
-    """
-    Crea asientos contables para todas las collections
-    que aún no tienen asiento contable.
-    """
+
+    from psycopg2.extras import RealDictCursor
+    from datetime import date
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -80,39 +79,90 @@ def sync_collections_to_accounting(conn):
         )
     """)
 
-    collections = cur.fetchall()
+    rows = cur.fetchall()
 
-    for c in collections:
+    for c in rows:
 
-        entry_date = c["fecha_emision"]
-        period = entry_date.strftime("%Y-%m")
-        description = f"Factura cliente {c['nombre_cliente']} – {c['numero_documento']}"
+        numero = c["numero_documento"]
+        total = float(c["total"] or 0)
+        if total <= 0:
+            continue
 
-        lines = [
-            {
-                "account_code": "103-01",
-                "account_name": "Cuentas por cobrar",
-                "debit": float(c["total"]),
-                "credit": 0,
-                "description": "Registro CxC"
-            },
-            {
-                "account_code": "401-01",
-                "account_name": "Ingresos por servicios",
-                "debit": 0,
-                "credit": float(c["total"]),
-                "description": "Ingreso por servicios"
-            }
-        ]
+        fecha = c["fecha_emision"] or date.today()
+        period = fecha.strftime("%Y-%m")
 
-        create_accounting_entry(
-            conn=conn,
-            entry_date=entry_date,
-            period=period,
-            description=description,
-            origin="COLLECTIONS",
-            origin_id=c["id"],
-            lines=lines,
-            created_by="SYSTEM"
-        )
+        # ==============================
+        # País desde servicios
+        # ==============================
+        cur.execute("""
+            SELECT pais
+            FROM servicios
+            WHERE factura = %s
+            LIMIT 1
+        """, (numero,))
+        srv = cur.fetchone()
+        pais = (srv["pais"] if srv else "").lower()
 
+        if pais == "costa rica":
+            subtotal = round(total / 1.13, 2)
+            iva = round(total - subtotal, 2)
+        else:
+            subtotal = total
+            iva = 0
+
+        # ==============================
+        # Crear ENTRY (cabecera)
+        # ==============================
+        cur.execute("""
+            INSERT INTO accounting_entries (
+                entry_date,
+                period,
+                description,
+                origin,
+                origin_id,
+                created_by
+            )
+            VALUES (%s, %s, %s, %s, %s, 'SYSTEM')
+            RETURNING id
+        """, (
+            fecha,
+            period,
+            f"From Collections {numero}",
+            "COLLECTIONS",
+            c["id"]
+        ))
+
+        entry_id = cur.fetchone()["id"]
+
+        # ==============================
+        # Líneas contables
+        # ==============================
+        cur.execute("""
+            INSERT INTO accounting_lines
+            (entry_id, account_code, account_name, debit, credit, line_description)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (
+            entry_id, "1101", "Cuentas por cobrar",
+            total, 0, f"From Collections {numero}"
+        ))
+
+        cur.execute("""
+            INSERT INTO accounting_lines
+            (entry_id, account_code, account_name, debit, credit, line_description)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (
+            entry_id, "4101", "Ingresos por servicios",
+            0, subtotal, f"From Collections {numero}"
+        ))
+
+        if iva > 0:
+            cur.execute("""
+                INSERT INTO accounting_lines
+                (entry_id, account_code, account_name, debit, credit, line_description)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (
+                entry_id, "2108", "IVA por pagar",
+                0, iva, f"From Collections {numero}"
+            ))
+
+    conn.commit()

@@ -26,6 +26,12 @@ def get_accounting_ledger(
     conditions = []
     params = []
 
+    if origin and not period:
+        raise HTTPException(
+            status_code=400,
+            detail="period es obligatorio cuando se filtra por origin"
+        )
+
     if period:
         conditions.append("e.period = %s")
         params.append(period)

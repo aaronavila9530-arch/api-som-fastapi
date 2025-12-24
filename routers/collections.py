@@ -39,41 +39,40 @@ def _safe_int(v, default=0) -> int:
 @router.post("/post-to-accounting")
 def post_collections_to_accounting(conn=Depends(get_db)):
 
-    print("🔥🔥🔥 POST /collections/post-to-accounting EJECUTADO 🔥🔥🔥")
-
-    from psycopg2.extras import RealDictCursor
-    from datetime import date
+    print("🔥 POST /collections/post-to-accounting EJECUTADO")
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
         # ====================================================
-        # 1️⃣ Collections sin líneas contables
+        # 1️⃣ Collections SIN asiento contable
         # ====================================================
         cur.execute("""
-            SELECT c.*
+            SELECT *
             FROM collections c
             WHERE NOT EXISTS (
                 SELECT 1
-                FROM accounting_lines al
-                WHERE al.line_description = 'From Collections ' || c.numero_documento
+                FROM accounting_entries e
+                WHERE e.origin = 'COLLECTIONS'
+                  AND e.origin_id = c.id
             )
         """)
 
-        collections = cur.fetchall()
+        rows = cur.fetchall()
         creados = 0
 
-        for c in collections:
+        for c in rows:
 
-            numero = c["numero_documento"]
             total = float(c["total"] or 0)
             if total <= 0:
                 continue
 
-            fecha = c["fecha_emision"] or date.today()
+            numero = c["numero_documento"]
+            fecha = c["fecha_emision"]
+            period = fecha.strftime("%Y-%m")
 
             # ====================================================
-            # 2️⃣ Buscar servicio para país
+            # 2️⃣ País desde servicios
             # ====================================================
             cur.execute("""
                 SELECT pais
@@ -81,12 +80,11 @@ def post_collections_to_accounting(conn=Depends(get_db)):
                 WHERE factura = %s
                 LIMIT 1
             """, (numero,))
-
             srv = cur.fetchone()
             pais = (srv["pais"] if srv else "").strip().lower()
 
             # ====================================================
-            # 3️⃣ Cálculo IVA
+            # 3️⃣ IVA
             # ====================================================
             if pais == "costa rica":
                 subtotal = round(total / 1.13, 2)
@@ -96,13 +94,31 @@ def post_collections_to_accounting(conn=Depends(get_db)):
                 iva = 0
 
             # ====================================================
-            # 4️⃣ CxC
+            # 4️⃣ CREAR CABECERA CONTABLE (🔥 CLAVE)
+            # ====================================================
+            cur.execute("""
+                INSERT INTO accounting_entries
+                    (entry_date, period, description, origin, origin_id, created_at)
+                VALUES (%s, %s, %s, 'COLLECTIONS', %s, NOW())
+                RETURNING id
+            """, (
+                fecha,
+                period,
+                f"Factura {numero}",
+                c["id"]
+            ))
+
+            entry_id = cur.fetchone()["id"]
+
+            # ====================================================
+            # 5️⃣ CxC (DEBE)
             # ====================================================
             cur.execute("""
                 INSERT INTO accounting_lines
-                    (account_code, account_name, debit, credit, line_description, created_at)
-                VALUES (%s, %s, %s, 0, %s, NOW())
+                    (entry_id, account_code, account_name, debit, credit, line_description, created_at)
+                VALUES (%s, %s, %s, %s, 0, %s, NOW())
             """, (
+                entry_id,
                 "1101",
                 "Cuentas por cobrar",
                 total,
@@ -110,13 +126,14 @@ def post_collections_to_accounting(conn=Depends(get_db)):
             ))
 
             # ====================================================
-            # 5️⃣ Ingresos
+            # 6️⃣ Ingresos (HABER)
             # ====================================================
             cur.execute("""
                 INSERT INTO accounting_lines
-                    (account_code, account_name, debit, credit, line_description, created_at)
-                VALUES (%s, %s, 0, %s, %s, NOW())
+                    (entry_id, account_code, account_name, debit, credit, line_description, created_at)
+                VALUES (%s, %s, %s, 0, %s, %s, NOW())
             """, (
+                entry_id,
                 "4101",
                 "Ingresos por servicios",
                 subtotal,
@@ -124,14 +141,15 @@ def post_collections_to_accounting(conn=Depends(get_db)):
             ))
 
             # ====================================================
-            # 6️⃣ IVA por pagar (solo CR)
+            # 7️⃣ IVA por pagar (CR)
             # ====================================================
             if iva > 0:
                 cur.execute("""
                     INSERT INTO accounting_lines
-                        (account_code, account_name, debit, credit, line_description, created_at)
-                    VALUES (%s, %s, 0, %s, %s, NOW())
+                        (entry_id, account_code, account_name, debit, credit, line_description, created_at)
+                    VALUES (%s, %s, %s, 0, %s, %s, NOW())
                 """, (
+                    entry_id,
                     "2108",
                     "IVA por pagar",
                     iva,
@@ -144,12 +162,13 @@ def post_collections_to_accounting(conn=Depends(get_db)):
 
         return {
             "status": "ok",
-            "lines_created": creados
+            "entries_created": creados
         }
 
     except Exception as e:
         conn.rollback()
-        raise HTTPException(500, f"Error posting collections to accounting: {repr(e)}")
+        print("❌ ERROR:", repr(e))
+        raise HTTPException(500, repr(e))
 
     finally:
         cur.close()

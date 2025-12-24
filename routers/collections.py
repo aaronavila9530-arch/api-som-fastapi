@@ -53,22 +53,12 @@ def sync_collections(
 ):
     """
     Sincroniza (upsert) facturas desde 'invoicing' hacia 'collections'.
-
-    - Si cliente = ALL o None -> procesa todas.
-    - Si cliente se envía -> filtra por coincidencia exacta/ILIKE en codigo_cliente o nombre_cliente.
-    - Calcula vencimiento y aging en el servidor.
-    - No pisa disputada.
-    - No pisa saldo_pendiente si ya hubo aplicaciones (pagos/NC).
-    - Si no hay aplicaciones (saldo_pendiente == total anterior), ajusta saldo al nuevo total.
-    - Nunca deja saldo_pendiente NULL.
-
-    + FIX: Para facturas MANUAL (invoicing sin snapshots),
-      trae num_informe/buque/operacion/periodo/descripcion desde servicios
-      usando servicios.factura == numero_documento.
     """
 
     if not conn:
         raise HTTPException(status_code=500, detail="No se pudo obtener conexión a la base de datos")
+
+    from services.accounting_auto import create_accounting_entry
 
     cur = None
     try:
@@ -77,25 +67,16 @@ def sync_collections(
         filtros = []
         params = {}
 
-        # ---------------------------
-        # Filtro cliente
-        # ---------------------------
         if cliente and cliente.upper() != "ALL":
             filtros.append("(i.codigo_cliente = %(cliente_exact)s OR i.nombre_cliente ILIKE %(cliente_like)s)")
             params["cliente_exact"] = cliente.strip()
             params["cliente_like"] = f"%{cliente.strip()}%"
 
-        # ---------------------------
-        # Filtro pendientes (opcional)
-        # ---------------------------
         if solo_pendientes:
             filtros.append("COALESCE(i.estado, 'EMITIDA') <> 'PAGADA'")
 
         where_sql = "WHERE " + " AND ".join(filtros) if filtros else ""
 
-        # ---------------------------
-        # Traer facturas desde invoicing
-        # ---------------------------
         cur.execute(
             f"""
             SELECT
@@ -108,9 +89,8 @@ def sync_collections(
                 i.moneda,
                 i.total,
                 i.estado,
-
-                i.num_informe,
                 i.termino_pago,
+                i.num_informe,
                 i.buque_contenedor,
                 i.operacion,
                 i.periodo_operacion,
@@ -121,254 +101,149 @@ def sync_collections(
             """,
             params
         )
+
         facturas = cur.fetchall()
 
         if not facturas:
-            return {
-                "status": "ok",
-                "synced": 0,
-                "message": "No hay facturas para sincronizar con los filtros actuales"
-            }
+            return {"status": "ok", "synced": 0}
 
         hoy = date.today()
         synced = 0
 
         for f in facturas:
-            numero = str(f.get("numero_documento", "")).strip()
+            numero = str(f.get("numero_documento") or "").strip()
             if not numero:
                 continue
 
             codigo_cliente = (f.get("codigo_cliente") or "").strip()
-            nombre_cliente = (f.get("nombre_cliente") or "").strip()
 
-            # ---------- total robusto ----------
             try:
                 total_nuevo = float(f.get("total") or 0)
             except Exception:
                 total_nuevo = 0.0
 
-            # 1) Obtener días de crédito desde cliente_credito (si existe)
             cur.execute("""
-                SELECT termino_pago, limite_credito
+                SELECT termino_pago
                 FROM cliente_credito
                 WHERE codigo_cliente = %s
                 LIMIT 1
             """, (codigo_cliente,))
             cc = cur.fetchone() or {}
-            dias_credito = cc.get("termino_pago")
+            dias_credito = _safe_int(cc.get("termino_pago") or f.get("termino_pago"), 0)
 
-            if dias_credito is None:
-                dias_credito = f.get("termino_pago")
-
-            dias_credito = _safe_int(dias_credito, default=0)
-
-            # 2) Fechas
             fecha_emision = f.get("fecha_emision")
             if isinstance(fecha_emision, str):
-                try:
-                    fecha_emision = date.fromisoformat(fecha_emision)
-                except Exception:
-                    fecha_emision = None
+                fecha_emision = date.fromisoformat(fecha_emision)
 
-            if not fecha_emision:
-                fecha_venc = None
-                aging = 0
-                bucket = "CURRENT"
-            else:
-                fecha_venc = fecha_emision + timedelta(days=dias_credito)
-                aging = (hoy - fecha_venc).days
-                bucket = _bucket_aging(aging)
+            fecha_venc = fecha_emision + timedelta(days=dias_credito)
+            aging = (hoy - fecha_venc).days
+            bucket = _bucket_aging(aging)
 
-            # ====================================================
-            # ✅ FIX: Traer info desde SERVICIOS por factura
-            # ====================================================
             cur.execute("""
-                SELECT
-                    num_informe,
-                    buque_contenedor,
-                    operacion,
-                    fecha_inicio,
-                    fecha_fin,
-                    detalle
+                SELECT pais
                 FROM servicios
                 WHERE TRIM(COALESCE(factura::text, '')) = %s
                 ORDER BY consec DESC
                 LIMIT 1
             """, (numero,))
             svc = cur.fetchone() or {}
+            pais = svc.get("pais")
 
-            # periodo desde servicios (fecha_inicio / fecha_fin)
-            periodo_servicio = ""
-            if svc.get("fecha_inicio") and svc.get("fecha_fin"):
-                periodo_servicio = f"{svc['fecha_inicio']} → {svc['fecha_fin']}"
-
-            # Fallback snapshots: primero invoicing, si viene NULL usar servicios
-            snap_num_informe = f.get("num_informe") or svc.get("num_informe")
-            snap_buque = f.get("buque_contenedor") or svc.get("buque_contenedor")
-            snap_operacion = f.get("operacion") or svc.get("operacion")
-            snap_periodo = f.get("periodo_operacion") or periodo_servicio
-            snap_descripcion = f.get("descripcion_servicio")
-            if not snap_descripcion:
-                snap_descripcion = svc.get("detalle") or ""
-
-            # 3) Ver si existe en collections (y traer saldo/total previo)
             cur.execute("""
-                SELECT
-                    estado_factura,
-                    disputada,
-                    saldo_pendiente,
-                    total
+                SELECT saldo_pendiente
                 FROM collections
                 WHERE numero_documento = %s
                 LIMIT 1
             """, (numero,))
             existente = cur.fetchone()
 
-            estado_invoicing = (f.get("estado") or "").strip().upper()
-
             if existente:
-                disputada = bool(existente.get("disputada"))
-                estado_factura_actual = (existente.get("estado_factura") or "").strip().upper()
-                total_anterior = existente.get("total")
-                saldo_actual = existente.get("saldo_pendiente")
+                continue  # ⚠️ NO generamos asiento si ya existe
 
-                try:
-                    total_anterior = float(total_anterior or 0)
-                except Exception:
-                    total_anterior = 0.0
-
-                try:
-                    if saldo_actual in (None, "", "None"):
-                        saldo_actual_num = None
-                    else:
-                        saldo_actual_num = float(saldo_actual)
-                except Exception:
-                    saldo_actual_num = None
-
-                # --------- Determinar saldo final (NO PISAR APLICACIONES) ----------
-                if saldo_actual_num is None:
-                    saldo_final = total_nuevo
-                else:
-                    if abs(saldo_actual_num - total_anterior) < 0.0001:
-                        saldo_final = total_nuevo
-                    else:
-                        saldo_final = saldo_actual_num
-
-                # --------- Determinar estado_factura final ----------
-                if estado_factura_actual in ("DISPUTADA", "WRITE_OFF", "PAGADA"):
-                    estado_factura_final = estado_factura_actual
-                else:
-                    estado_factura_final = "PAGADA" if saldo_final <= 0 else "PENDIENTE_PAGO"
-
-                if estado_invoicing == "PAGADA" and saldo_final <= 0:
-                    estado_factura_final = "PAGADA"
-
-                # 4) UPDATE
-                cur.execute("""
-                    UPDATE collections
-                    SET
-                        codigo_cliente = %s,
-                        nombre_cliente = %s,
-                        tipo_factura = %s,
-                        tipo_documento = %s,
-                        fecha_emision = %s,
-                        fecha_vencimiento = %s,
-                        moneda = %s,
-                        total = %s,
-                        saldo_pendiente = %s,
-                        dias_credito = %s,
-                        aging_dias = %s,
-                        bucket_aging = %s,
-                        num_informe = %s,
-                        buque_contenedor = %s,
-                        operacion = %s,
-                        periodo_operacion = %s,
-                        descripcion_servicio = %s,
-                        estado_factura = %s
-                    WHERE numero_documento = %s
-                """, (
+            cur.execute("""
+                INSERT INTO collections (
+                    numero_documento,
                     codigo_cliente,
                     nombre_cliente,
-                    f.get("tipo_factura"),
-                    f.get("tipo_documento"),
+                    tipo_factura,
+                    tipo_documento,
                     fecha_emision,
-                    fecha_venc,
-                    f.get("moneda"),
-                    total_nuevo,
-                    saldo_final,
+                    fecha_vencimiento,
+                    moneda,
+                    total,
+                    saldo_pendiente,
                     dias_credito,
-                    aging,
-                    bucket,
-                    snap_num_informe,
-                    snap_buque,
-                    snap_operacion,
-                    snap_periodo,
-                    snap_descripcion,
-                    estado_factura_final,
-                    numero
-                ))
-
-            else:
-                # --------- Nuevo registro ----------
-                disputada = False
-
-                if estado_invoicing == "PAGADA":
-                    estado_factura = "PAGADA"
-                    saldo_inicial = 0.0
-                else:
-                    estado_factura = "PENDIENTE_PAGO"
-                    saldo_inicial = total_nuevo
-
-                cur.execute("""
-                    INSERT INTO collections (
-                        numero_documento,
-                        codigo_cliente,
-                        nombre_cliente,
-                        tipo_factura,
-                        tipo_documento,
-                        fecha_emision,
-                        fecha_vencimiento,
-                        moneda,
-                        total,
-                        saldo_pendiente,
-                        dias_credito,
-                        aging_dias,
-                        bucket_aging,
-                        num_informe,
-                        buque_contenedor,
-                        operacion,
-                        periodo_operacion,
-                        descripcion_servicio,
-                        estado_factura,
-                        disputada
-                    ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s
-                    )
-                """, (
-                    numero,
-                    codigo_cliente,
-                    nombre_cliente,
-                    f.get("tipo_factura"),
-                    f.get("tipo_documento"),
-                    fecha_emision,
-                    fecha_venc,
-                    f.get("moneda"),
-                    total_nuevo,
-                    saldo_inicial,
-                    dias_credito,
-                    aging,
-                    bucket,
-                    snap_num_informe,
-                    snap_buque,
-                    snap_operacion,
-                    snap_periodo,
-                    snap_descripcion,
+                    aging_dias,
+                    bucket_aging,
                     estado_factura,
                     disputada
-                ))
+                ) VALUES (
+                    %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    %s, %s, %s, %s,
+                    'PENDIENTE_PAGO', false
+                )
+            """, (
+                numero,
+                codigo_cliente,
+                f.get("nombre_cliente"),
+                f.get("tipo_factura"),
+                f.get("tipo_documento"),
+                fecha_emision,
+                fecha_venc,
+                f.get("moneda"),
+                total_nuevo,
+                total_nuevo,
+                dias_credito,
+                aging,
+                bucket
+            ))
+
+            # ===============================
+            # ASIENTO CONTABLE AUTOMÁTICO
+            # ===============================
+            if pais == "Costa Rica":
+                subtotal = total_nuevo / 1.13
+                iva = total_nuevo - subtotal
+            else:
+                subtotal = total_nuevo
+                iva = 0
+
+            lines = [
+                {
+                    "account_code": "1101",
+                    "account_name": "Cuentas por cobrar",
+                    "debit": total_nuevo,
+                    "credit": 0,
+                    "description": f"Factura {numero}"
+                },
+                {
+                    "account_code": "4101",
+                    "account_name": "Ingresos por servicios",
+                    "debit": 0,
+                    "credit": subtotal,
+                    "description": f"Ingreso factura {numero}"
+                }
+            ]
+
+            if iva > 0:
+                lines.append({
+                    "account_code": "2102",
+                    "account_name": "IVA por pagar",
+                    "debit": 0,
+                    "credit": iva,
+                    "description": f"IVA factura {numero}"
+                })
+
+            create_accounting_entry(
+                conn=conn,
+                entry_date=fecha_emision,
+                period=fecha_emision.strftime("%Y-%m"),
+                description=f"Factura {numero}",
+                origin="COLLECTIONS",
+                origin_id=None,
+                lines=lines
+            )
 
             synced += 1
 
@@ -377,14 +252,13 @@ def sync_collections(
         return {
             "status": "ok",
             "synced": synced,
-            "cliente": cliente or "ALL",
-            "solo_pendientes": solo_pendientes
+            "cliente": cliente or "ALL"
         }
 
     except Exception as e:
         if conn:
             conn.rollback()
-        raise HTTPException(status_code=500, detail=f"Error sync collections: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
     finally:
         if cur:
@@ -785,50 +659,4 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
         if cur:
             cur.close()
 
-
-from services.accounting_auto import create_accounting_entry
-
-# después de insertar en collections
-if pais == "Costa Rica":
-    subtotal = total / 1.13
-    iva = total - subtotal
-else:
-    subtotal = total
-    iva = 0
-
-lines = [
-    {
-        "account_code": "1101",  # CxC
-        "account_name": "Cuentas por cobrar",
-        "debit": total,
-        "credit": 0,
-        "description": f"Factura {numero_documento}"
-    },
-    {
-        "account_code": "4101",  # Ingresos
-        "account_name": "Ingresos por servicios",
-        "debit": 0,
-        "credit": subtotal,
-        "description": f"Ingreso {numero_documento}"
-    }
-]
-
-if iva > 0:
-    lines.append({
-        "account_code": "2102",  # IVA por pagar
-        "account_name": "IVA por pagar",
-        "debit": 0,
-        "credit": iva,
-        "description": f"IVA {numero_documento}"
-    })
-
-create_accounting_entry(
-    conn=conn,
-    entry_date=date.today(),
-    period=period,
-    description=f"Factura {numero_documento}",
-    origin="COLLECTIONS",
-    origin_id=collection_id,
-    lines=lines
-)
 

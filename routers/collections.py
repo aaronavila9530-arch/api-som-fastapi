@@ -36,207 +36,117 @@ def _safe_int(v, default=0) -> int:
         return default
 
 
-# ============================================================
-# POST /collections/sync
-# Copia facturas emitidas desde invoicing a collections
-# y genera asiento contable automático
-# ============================================================
 @router.post("/sync")
 def sync_collections(
-    cliente: Optional[str] = Query(
-        None,
-        description="ALL o filtro (código_cliente o nombre_cliente). Si no se envía, asume ALL."
-    ),
-    solo_pendientes: bool = Query(
-        True,
-        description="Si True, solo sincroniza facturas con estado != PAGADA (según invoicing)."
-    ),
+    cliente: Optional[str] = Query(None),
+    solo_pendientes: bool = Query(True),
     conn=Depends(get_db)
 ):
     """
-    Sincroniza (upsert) facturas desde 'invoicing' hacia 'collections'
-    y crea automáticamente el asiento contable (CxC).
+    Sincroniza facturas desde invoicing → collections
+    y crea AUTOMÁTICAMENTE el asiento contable CxC.
     """
 
     if not conn:
-        raise HTTPException(status_code=500, detail="No se pudo obtener conexión a la base de datos")
+        raise HTTPException(500, "No DB connection")
 
     from services.accounting_auto import create_accounting_entry
 
-    cur = None
-    try:
-        cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur = conn.cursor(cursor_factory=RealDictCursor)
 
+    try:
         filtros = []
         params = {}
 
         if cliente and cliente.upper() != "ALL":
-            filtros.append("(i.codigo_cliente = %(cliente_exact)s OR i.nombre_cliente ILIKE %(cliente_like)s)")
-            params["cliente_exact"] = cliente.strip()
-            params["cliente_like"] = f"%{cliente.strip()}%"
+            filtros.append("(i.codigo_cliente = %(c)s OR i.nombre_cliente ILIKE %(cl)s)")
+            params["c"] = cliente
+            params["cl"] = f"%{cliente}%"
 
         if solo_pendientes:
-            filtros.append("COALESCE(i.estado, 'EMITIDA') <> 'PAGADA'")
+            filtros.append("COALESCE(i.estado,'EMITIDA') <> 'PAGADA'")
 
         where_sql = "WHERE " + " AND ".join(filtros) if filtros else ""
 
-        # --------------------------------------------------
-        # FACTURAS DESDE INVOICING
-        # --------------------------------------------------
-        cur.execute(
-            f"""
+        cur.execute(f"""
             SELECT
-                i.tipo_factura,
-                i.tipo_documento,
                 i.numero_documento,
                 i.codigo_cliente,
                 i.nombre_cliente,
                 i.fecha_emision,
                 i.moneda,
                 i.total,
-                i.estado,
                 i.termino_pago
             FROM invoicing i
             {where_sql}
-            ORDER BY i.fecha_emision DESC
-            """,
-            params
-        )
+        """, params)
 
         facturas = cur.fetchall()
-        if not facturas:
-            return {"status": "ok", "synced": 0}
-
         hoy = date.today()
         synced = 0
 
         for f in facturas:
-            numero = str(f.get("numero_documento") or "").strip()
+            numero = str(f["numero_documento"]).strip()
             if not numero:
                 continue
 
-            codigo_cliente = (f.get("codigo_cliente") or "").strip()
-            nombre_cliente = (f.get("nombre_cliente") or "").strip()
+            total = float(f["total"] or 0)
+            fecha_emision = f["fecha_emision"]
+            period = fecha_emision.strftime("%Y-%m")
 
-            try:
-                total_nuevo = float(f.get("total") or 0)
-            except Exception:
-                total_nuevo = 0.0
-
-            # ----------------------------------------------
-            # DÍAS DE CRÉDITO
-            # ----------------------------------------------
+            # --------------------------------------------------
+            # 1️⃣ INSERT EN COLLECTIONS (si no existe)
+            # --------------------------------------------------
             cur.execute("""
-                SELECT termino_pago
-                FROM cliente_credito
-                WHERE codigo_cliente = %s
-                LIMIT 1
-            """, (codigo_cliente,))
-            cc = cur.fetchone() or {}
-            dias_credito = _safe_int(cc.get("termino_pago") or f.get("termino_pago"), 0)
-
-            fecha_emision = f.get("fecha_emision")
-            if isinstance(fecha_emision, str):
-                fecha_emision = date.fromisoformat(fecha_emision)
-
-            fecha_venc = fecha_emision + timedelta(days=dias_credito)
-            aging = (hoy - fecha_venc).days
-            bucket = _bucket_aging(aging)
-
-            # ----------------------------------------------
-            # PAÍS (para IVA)
-            # ----------------------------------------------
-            cur.execute("""
-                SELECT pais
-                FROM servicios
-                WHERE TRIM(COALESCE(factura::text, '')) = %s
-                ORDER BY consec DESC
-                LIMIT 1
-            """, (numero,))
-            svc = cur.fetchone() or {}
-            pais = svc.get("pais")
-
-            # ----------------------------------------------
-            # COLLECTIONS (INSERT SI NO EXISTE)
-            # ----------------------------------------------
-            cur.execute("""
-                SELECT id
-                FROM collections
+                SELECT 1 FROM collections
                 WHERE numero_documento = %s
-                LIMIT 1
             """, (numero,))
-            col = cur.fetchone()
+            if cur.fetchone():
+                continue
 
-            if not col:
-                cur.execute("""
-                    INSERT INTO collections (
-                        numero_documento,
-                        codigo_cliente,
-                        nombre_cliente,
-                        tipo_factura,
-                        tipo_documento,
-                        fecha_emision,
-                        fecha_vencimiento,
-                        moneda,
-                        total,
-                        saldo_pendiente,
-                        dias_credito,
-                        aging_dias,
-                        bucket_aging,
-                        estado_factura,
-                        disputada
-                    ) VALUES (
-                        %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s,
-                        %s, %s, %s, %s,
-                        'PENDIENTE_PAGO', false
-                    )
-                """, (
-                    numero,
+            cur.execute("""
+                INSERT INTO collections (
+                    numero_documento,
                     codigo_cliente,
                     nombre_cliente,
-                    f.get("tipo_factura"),
-                    f.get("tipo_documento"),
                     fecha_emision,
-                    fecha_venc,
-                    f.get("moneda"),
-                    total_nuevo,
-                    total_nuevo,
-                    dias_credito,
-                    aging,
-                    bucket
-                ))
+                    moneda,
+                    total,
+                    saldo_pendiente,
+                    estado_factura,
+                    disputada
+                ) VALUES (
+                    %s,%s,%s,%s,%s,%s,%s,'PENDIENTE_PAGO',false
+                )
+            """, (
+                numero,
+                f["codigo_cliente"],
+                f["nombre_cliente"],
+                fecha_emision,
+                f["moneda"],
+                total,
+                total
+            ))
 
-            # ----------------------------------------------
-            # VERIFICAR SI YA EXISTE ASIENTO CONTABLE
-            # ----------------------------------------------
+            # --------------------------------------------------
+            # 2️⃣ VALIDAR SI YA EXISTE ASIENTO CONTABLE
+            # --------------------------------------------------
             cur.execute("""
-                SELECT id
-                FROM accounting_entries
+                SELECT 1 FROM accounting_entries
                 WHERE origin = 'COLLECTIONS'
                   AND origin_id = %s
-                LIMIT 1
             """, (numero,))
-            asiento = cur.fetchone()
+            if cur.fetchone():
+                continue
 
-            if asiento:
-                continue  # asiento ya existe, no duplicar
-
-            # ----------------------------------------------
-            # ASIENTO CONTABLE AUTOMÁTICO
-            # ----------------------------------------------
-            if pais == "Costa Rica":
-                subtotal = total_nuevo / 1.13
-                iva = total_nuevo - subtotal
-            else:
-                subtotal = total_nuevo
-                iva = 0
-
+            # --------------------------------------------------
+            # 3️⃣ CREAR ASIENTO CONTABLE
+            # --------------------------------------------------
             lines = [
                 {
                     "account_code": "1101",
                     "account_name": "Cuentas por cobrar",
-                    "debit": total_nuevo,
+                    "debit": total,
                     "credit": 0,
                     "description": f"Factura {numero}"
                 },
@@ -244,48 +154,32 @@ def sync_collections(
                     "account_code": "4101",
                     "account_name": "Ingresos por servicios",
                     "debit": 0,
-                    "credit": subtotal,
+                    "credit": total,
                     "description": f"Ingreso factura {numero}"
                 }
             ]
 
-            if iva > 0:
-                lines.append({
-                    "account_code": "2102",
-                    "account_name": "IVA por pagar",
-                    "debit": 0,
-                    "credit": iva,
-                    "description": f"IVA factura {numero}"
-                })
-
             create_accounting_entry(
                 conn=conn,
                 entry_date=fecha_emision,
-                period=fecha_emision.strftime("%Y-%m"),
+                period=period,
                 description=f"Factura {numero}",
                 origin="COLLECTIONS",
-                origin_id=numero,   # 🔑 CLAVE
+                origin_id=numero,
                 lines=lines
             )
 
             synced += 1
 
         conn.commit()
-
-        return {
-            "status": "ok",
-            "synced": synced,
-            "cliente": cliente or "ALL"
-        }
+        return {"status": "ok", "synced": synced}
 
     except Exception as e:
-        if conn:
-            conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        conn.rollback()
+        raise HTTPException(500, str(e))
 
     finally:
-        if cur:
-            cur.close()
+        cur.close()
 
 # ============================================================
 # GET /collections/search

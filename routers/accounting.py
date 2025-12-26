@@ -565,3 +565,119 @@ def sync_itp(conn=Depends(get_db)):
     except Exception as e:
         conn.rollback()
         raise HTTPException(500, repr(e))
+
+
+
+@router.get("/ledger")
+def get_accounting_ledger(
+    period: str | None = None,
+    origin: str | None = None,
+    account_code: str | None = None,   # ✅ NUEVO FILTRO
+    conn=Depends(get_db)
+):
+    """
+    Devuelve asientos contables agrupados por entry_id,
+    con sus líneas (debe / haber)
+
+    Filtros soportados:
+    - period (YYYY-MM)
+    - origin (COLLECTIONS, ITP, CASH_APP, MANUAL, etc.)
+    - account_code (1101, 2101, 5101, etc.)
+    """
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    conditions = []
+    params = []
+
+    # -----------------------------
+    # VALIDACIONES
+    # -----------------------------
+    if origin and not period:
+        raise HTTPException(
+            status_code=400,
+            detail="period es obligatorio cuando se filtra por origin"
+        )
+
+    # -----------------------------
+    # FILTROS
+    # -----------------------------
+    if period:
+        conditions.append("e.period = %s")
+        params.append(period)
+
+    if origin:
+        conditions.append("e.origin = %s")
+        params.append(origin)
+
+    if account_code:
+        conditions.append("l.account_code = %s")
+        params.append(account_code)
+
+    where_clause = ""
+    if conditions:
+        where_clause = "WHERE " + " AND ".join(conditions)
+
+    # -----------------------------
+    # QUERY PRINCIPAL
+    # -----------------------------
+    query = f"""
+        SELECT
+            e.id AS entry_id,
+            e.entry_date,
+            e.period,
+            e.description AS entry_description,
+            e.origin,
+            e.origin_id,
+
+            l.id AS line_id,
+            l.account_code,
+            l.account_name,
+            l.debit,
+            l.credit,
+            l.line_description
+
+        FROM accounting_entries e
+        JOIN accounting_lines l ON l.entry_id = e.id
+        {where_clause}
+        ORDER BY
+            e.entry_date DESC,
+            e.id DESC,
+            l.id ASC
+    """
+
+    cur.execute(query, params)
+    rows = cur.fetchall()
+
+    # -----------------------------
+    # AGRUPAR POR entry_id
+    # -----------------------------
+    entries = {}
+
+    for row in rows:
+        entry_id = row["entry_id"]
+
+        if entry_id not in entries:
+            entries[entry_id] = {
+                "entry_id": entry_id,
+                "entry_date": row["entry_date"],
+                "period": row["period"],
+                "description": row["entry_description"],
+                "origin": row["origin"],
+                "origin_id": row["origin_id"],
+                "lines": []
+            }
+
+        entries[entry_id]["lines"].append({
+            "line_id": row["line_id"],
+            "account_code": row["account_code"],
+            "account_name": row["account_name"],
+            "debit": float(row["debit"] or 0),
+            "credit": float(row["credit"] or 0),
+            "line_description": row["line_description"]
+        })
+
+    return {
+        "data": list(entries.values())
+    }
+

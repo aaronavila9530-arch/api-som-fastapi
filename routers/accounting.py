@@ -549,3 +549,19 @@ def sync_cash_app_to_accounting(conn=Depends(get_db)):
 
     finally:
         cur.close()
+
+
+@router.post("/sync/itp")
+def sync_itp(conn=Depends(get_db)):
+    try:
+        from services.accounting_auto import sync_itp_to_accounting
+        sync_itp_to_accounting(conn)
+
+        return {
+            "status": "ok",
+            "message": "Invoice to Pay sincronizado a Accounting"
+        }
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(500, repr(e))

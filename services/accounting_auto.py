@@ -166,3 +166,109 @@ def sync_collections_to_accounting(conn):
             ))
 
     conn.commit()
+
+
+
+def sync_itp_to_accounting(conn):
+    """
+    Sincroniza payment_obligations → accounting
+    Maneja:
+    - Facturas por pagar
+    - Facturas pagadas
+    """
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # 1️⃣ Traer obligaciones SIN asiento contable
+    cur.execute("""
+        SELECT p.*
+        FROM payment_obligations p
+        LEFT JOIN accounting_entries a
+          ON a.origin = 'ITP'
+         AND a.origin_id = p.id
+        WHERE a.id IS NULL
+          AND p.active = TRUE
+    """)
+
+    obligations = cur.fetchall()
+
+    for ob in obligations:
+        obligation_id = ob["id"]
+        total = float(ob["total"] or 0)
+        balance = float(ob["balance"] or 0)
+        status = ob["status"]
+        reference = ob["reference"]
+        issue_date = ob["issue_date"] or date.today()
+        period = issue_date.strftime("%Y-%m")
+
+        # =============================
+        # CUENTAS CONTABLES
+        # =============================
+        expense_account = "5101"
+        expense_name = "Gastos de servicios"
+
+        if ob["obligation_type"] == "SURVEYOR_FEE":
+            expense_account = "5102"
+            expense_name = "Honorarios surveyor"
+
+        # =============================
+        # ASIENTO GASTO / CXP
+        # =============================
+        lines = [
+            {
+                "account_code": expense_account,
+                "account_name": expense_name,
+                "debit": total,
+                "credit": 0,
+                "line_description": f"From ITP {reference}"
+            },
+            {
+                "account_code": "2101",
+                "account_name": "Cuentas por pagar",
+                "debit": 0,
+                "credit": total,
+                "line_description": f"From ITP {reference}"
+            }
+        ]
+
+        create_accounting_entry(
+            conn=conn,
+            entry_date=issue_date,
+            period=period,
+            description=f"ITP {reference}",
+            origin="ITP",
+            origin_id=obligation_id,
+            lines=lines
+        )
+
+        # =============================
+        # SI YA ESTÁ PAGADA → PAGO
+        # =============================
+        if status == "PAID" and balance == 0:
+            pay_lines = [
+                {
+                    "account_code": "2101",
+                    "account_name": "Cuentas por pagar",
+                    "debit": total,
+                    "credit": 0,
+                    "line_description": f"Pago ITP {reference}"
+                },
+                {
+                    "account_code": "1102",
+                    "account_name": "Bancos",
+                    "debit": 0,
+                    "credit": total,
+                    "line_description": f"Pago ITP {reference}"
+                }
+            ]
+
+            create_accounting_entry(
+                conn=conn,
+                entry_date=ob["last_payment_date"] or issue_date,
+                period=period,
+                description=f"Pago ITP {reference}",
+                origin="ITP_PAYMENT",
+                origin_id=obligation_id,
+                lines=pay_lines
+            )
+
+    conn.commit()

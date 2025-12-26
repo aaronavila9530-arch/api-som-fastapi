@@ -172,9 +172,11 @@ def sync_collections_to_accounting(conn):
 def sync_itp_to_accounting(conn):
     """
     Sincroniza payment_obligations → accounting
+
     Maneja:
-    - Facturas por pagar (Gasto vs CxP)
-    - Facturas pagadas (CxP vs Bancos)
+    - Facturas por pagar  → Gasto vs Cuentas por Pagar
+    - Facturas pagadas    → Cuentas por Pagar vs Bancos
+    - Conversión CRC → USD (÷ 500)
     """
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -197,16 +199,32 @@ def sync_itp_to_accounting(conn):
     for ob in obligations:
 
         obligation_id = ob["id"]
-        payee_name = ob["payee_name"]                # ✅ USAR ESTO
-        total = float(ob["total"] or 0)
-        balance = float(ob["balance"] or 0)
+        payee_name = ob.get("payee_name") or "N/A"
         status = ob["status"]
 
         issue_date = ob["issue_date"] or date.today()
         period = issue_date.strftime("%Y-%m")
 
         # ============================================================
-        # CUENTAS CONTABLES (CATÁLOGO)
+        # 2️⃣ MONEDA (CRC → USD)
+        # ============================================================
+        currency = ob.get("currency") or "USD"
+
+        raw_total = float(ob["total"] or 0)
+        raw_balance = float(ob["balance"] or 0)
+
+        if currency == "CRC":
+            total = round(raw_total / 500, 2)
+            balance = round(raw_balance / 500, 2)
+        else:
+            total = raw_total
+            balance = raw_balance
+
+        if total <= 0:
+            continue
+
+        # ============================================================
+        # 3️⃣ CUENTAS CONTABLES (CATÁLOGO)
         # ============================================================
         expense_account = "5101"
         expense_name = "Gastos de servicios"
@@ -216,7 +234,7 @@ def sync_itp_to_accounting(conn):
             expense_name = "Honorarios surveyor"
 
         # ============================================================
-        # 2️⃣ ASIENTO DE GASTO / CUENTAS POR PAGAR
+        # 4️⃣ ASIENTO GASTO / CUENTAS POR PAGAR
         # ============================================================
         detail_text = f"From ITP {payee_name}"
 
@@ -248,7 +266,7 @@ def sync_itp_to_accounting(conn):
         )
 
         # ============================================================
-        # 3️⃣ SI YA ESTÁ PAGADA → ASIENTO DE PAGO
+        # 5️⃣ SI YA ESTÁ PAGADA → ASIENTO DE PAGO
         # ============================================================
         if status == "PAID" and balance == 0:
 

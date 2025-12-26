@@ -173,85 +173,101 @@ def sync_itp_to_accounting(conn):
     """
     Sincroniza payment_obligations → accounting
 
-    Maneja:
-    - Facturas por pagar (Gasto vs CxP)  origin='ITP'
-    - Facturas pagadas (CxP vs Bancos)  origin='ITP_PAYMENT'
-
     Reglas:
-    - Si currency = 'CRC' => total_usd = total / 500
-    - Si currency = 'USD' => total_usd = total
-    - Detalle debe usar payee_name:
-        * From ITP {payee_name}
-        * From ITP Payment done to {payee_name}
-    IMPORTANTÍSIMO:
-    - create_accounting_entry() inserta line_description desde line.get("description")
-      por eso aquí usamos la llave "description" (NO "line_description").
+    - Si currency = 'CRC' => convierte a USD dividiendo entre 500.
+    - Si currency = 'USD' => no convierte.
+    - Genera asiento Gasto vs CxP (origin='ITP') siempre que no exista,
+      o corrige si ya existe pero está sin detalle o con monto incorrecto.
+    - Si status='PAID' y balance=0 => genera asiento CxP vs Bancos (origin='ITP_PAYMENT')
+      o corrige si ya existe pero está sin detalle o con monto incorrecto.
     """
-
-    from psycopg2.extras import RealDictCursor
-    from datetime import date
-
-    # create_accounting_entry está en este mismo archivo normalmente.
-    # Si no, descomenta la línea siguiente y ajusta el import:
-    # from services.accounting_auto import create_accounting_entry
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    try:
+    # ============================================================
+    # 1) Traer obligaciones activas (no solo "sin asiento")
+    #    porque necesitamos CORREGIR las ya creadas.
+    # ============================================================
+    cur.execute("""
+        SELECT
+            p.id,
+            p.payee_name,
+            p.obligation_type,
+            p.reference,
+            p.issue_date,
+            p.last_payment_date,
+            p.currency,
+            p.total,
+            p.balance,
+            p.status,
+            p.active
+        FROM payment_obligations p
+        WHERE p.active = TRUE
+        ORDER BY p.id ASC
+    """)
+    obligations = cur.fetchall()
+
+    # Helper para convertir CRC→USD
+    def _to_usd(amount: float, currency: str) -> float:
+        amount = float(amount or 0)
+        if (currency or "").upper() == "CRC":
+            return round(amount / 500.0, 2)
+        return round(amount, 2)
+
+    # ============================================================
+    # 2) Procesar una por una
+    # ============================================================
+    for ob in obligations:
+        obligation_id = ob["id"]
+        payee_name = (ob.get("payee_name") or "").strip() or "N/A"
+        currency = (ob.get("currency") or "").upper()
+
+        total_raw = float(ob.get("total") or 0)
+        balance_raw = float(ob.get("balance") or 0)
+
+        total = _to_usd(total_raw, currency)
+        balance = _to_usd(balance_raw, currency)
+
+        status = (ob.get("status") or "").upper()
+        reference = ob.get("reference")
+
+        issue_date = ob.get("issue_date") or date.today()
+        period = issue_date.strftime("%Y-%m")
+
+        # ------------------------------------------------------------
+        # Cuentas (según tu lógica actual)
+        # ------------------------------------------------------------
+        expense_account = "5101"
+        expense_name = "Gastos de servicios"
+        if ob.get("obligation_type") == "SURVEYOR_FEE":
+            expense_account = "5102"
+            expense_name = "Honorarios surveyor"
+
+        ap_account = "2101"
+        ap_name = "Cuentas por pagar"
+
+        bank_account = "1102"
+        bank_name = "Bancos"
+
         # ============================================================
-        # 1) Traer obligaciones SIN asiento contable (origin='ITP')
+        # A) ASIENTO GASTO vs CxP (origin = 'ITP')
         # ============================================================
+        detail_text = f"From ITP {payee_name}"
+
+        # ¿Existe ya el asiento ITP para esta obligación?
         cur.execute("""
-            SELECT p.*
-            FROM payment_obligations p
-            LEFT JOIN accounting_entries a
-              ON a.origin = 'ITP'
-             AND a.origin_id = p.id
-            WHERE a.id IS NULL
-              AND p.active = TRUE
-        """)
+            SELECT id
+            FROM accounting_entries
+            WHERE origin = 'ITP'
+              AND origin_id = %s
+            LIMIT 1
+        """, (obligation_id,))
+        row_itp = cur.fetchone()
+        itp_entry_id = row_itp["id"] if row_itp else None
 
-        obligations = cur.fetchall()
-
-        for ob in obligations:
-            obligation_id = ob["id"]
-            payee_name = (ob.get("payee_name") or "").strip() or "N/A"
-
-            currency = (ob.get("currency") or "").strip().upper()
-            total_raw = float(ob.get("total") or 0)
-            balance_raw = float(ob.get("balance") or 0)
-            status = (ob.get("status") or "").strip().upper()
-
-            issue_date = ob.get("issue_date") or date.today()
-            period = issue_date.strftime("%Y-%m")
-
-            # ============================================================
-            # 2) Conversión CRC → USD (según tu regla)
-            # ============================================================
-            if currency == "CRC":
-                total = round(total_raw / 500, 2)
-                balance = round(balance_raw / 500, 2)
-            else:
-                total = round(total_raw, 2)
-                balance = round(balance_raw, 2)
-
-            if total <= 0:
-                continue
-
-            # ============================================================
-            # 3) Cuentas contables (según obligation_type)
-            # ============================================================
-            expense_account = "5101"
-            expense_name = "Gastos de servicios"
-
-            if (ob.get("obligation_type") or "").strip().upper() == "SURVEYOR_FEE":
-                expense_account = "5102"
-                expense_name = "Honorarios surveyor"
-
-            # ============================================================
-            # 4) Asiento Gasto vs CxP (ITP)
-            # ============================================================
-            detail_text = f"From ITP {payee_name}"
+        if not itp_entry_id:
+            # Crear
+            from services.accounting_auto import create_accounting_entry
 
             lines = [
                 {
@@ -259,15 +275,14 @@ def sync_itp_to_accounting(conn):
                     "account_name": expense_name,
                     "debit": total,
                     "credit": 0,
-                    # OJO: create_accounting_entry usa line.get("description")
-                    "description": detail_text
+                    "line_description": detail_text
                 },
                 {
-                    "account_code": "2101",
-                    "account_name": "Cuentas por pagar",
+                    "account_code": ap_account,
+                    "account_name": ap_name,
                     "debit": 0,
                     "credit": total,
-                    "description": detail_text
+                    "line_description": detail_text
                 }
             ]
 
@@ -281,31 +296,85 @@ def sync_itp_to_accounting(conn):
                 lines=lines
             )
 
-            # ============================================================
-            # 5) Si ya está pagada → asiento CxP vs Bancos (ITP_PAYMENT)
-            #    Nota: tu condición original era status == 'PAID' y balance == 0
-            #    Aquí lo respetamos, pero usando balance ya convertido.
-            # ============================================================
-            if status == "PAID" and round(balance, 2) == 0:
-                payment_date = ob.get("last_payment_date") or issue_date
-                payment_period = payment_date.strftime("%Y-%m")
+        else:
+            # Corregir detalle vacío y/o monto incorrecto
+            # Traer líneas actuales
+            cur.execute("""
+                SELECT id, account_code, debit, credit, COALESCE(line_description,'') AS line_description
+                FROM accounting_lines
+                WHERE entry_id = %s
+                ORDER BY id
+            """, (itp_entry_id,))
+            existing_lines = cur.fetchall()
 
-                payment_detail = f"From ITP Payment done to {payee_name}"
+            # Detectar si requiere ajuste por monto: buscamos la línea del gasto
+            current_debit = 0.0
+            for l in existing_lines:
+                if str(l["account_code"]) == str(expense_account):
+                    current_debit = float(l["debit"] or 0)
+                    break
+
+            needs_amount_fix = abs(round(current_debit, 2) - total) > 0.01
+
+            # 1) detalle: si está vacío en alguna línea, lo seteamos
+            cur.execute("""
+                UPDATE accounting_lines
+                SET line_description = %s
+                WHERE entry_id = %s
+                  AND (line_description IS NULL OR BTRIM(line_description) = '')
+            """, (detail_text, itp_entry_id))
+
+            # 2) monto: si no coincide, forzamos valores correctos en las 2 cuentas
+            if needs_amount_fix:
+                cur.execute("""
+                    UPDATE accounting_lines
+                    SET debit = %s, credit = 0
+                    WHERE entry_id = %s
+                      AND account_code = %s
+                """, (total, itp_entry_id, expense_account))
+
+                cur.execute("""
+                    UPDATE accounting_lines
+                    SET debit = 0, credit = %s
+                    WHERE entry_id = %s
+                      AND account_code = %s
+                """, (total, itp_entry_id, ap_account))
+
+        # ============================================================
+        # B) SI ESTÁ PAGADA → ASIENTO CxP vs Bancos (origin='ITP_PAYMENT')
+        # ============================================================
+        if status == "PAID" and balance == 0:
+            payment_date = ob.get("last_payment_date") or issue_date
+            payment_period = payment_date.strftime("%Y-%m")
+            payment_detail = f"From ITP Payment done to {payee_name}"
+
+            cur.execute("""
+                SELECT id
+                FROM accounting_entries
+                WHERE origin = 'ITP_PAYMENT'
+                  AND origin_id = %s
+                LIMIT 1
+            """, (obligation_id,))
+            row_pay = cur.fetchone()
+            pay_entry_id = row_pay["id"] if row_pay else None
+
+            if not pay_entry_id:
+                from services.accounting_auto import create_accounting_entry
 
                 pay_lines = [
                     {
-                        "account_code": "2101",
-                        "account_name": "Cuentas por pagar",
+                        "account_code": ap_account,
+                        "account_name": ap_name,
                         "debit": total,
                         "credit": 0,
-                        "description": payment_detail
+                        "line_description": payment_detail
                     },
                     {
-                        "account_code": "1102",
-                        "account_name": "Bancos",
+                        "account_code": bank_account,
+                        "account_name": bank_name,
                         "debit": 0,
                         "credit": total,
-                        "description": payment_detail
+                        "line_description": payment_detail
                     }
                 ]
 
@@ -319,11 +388,44 @@ def sync_itp_to_accounting(conn):
                     lines=pay_lines
                 )
 
-        conn.commit()
+            else:
+                # Corregir detalle y/o monto
+                cur.execute("""
+                    SELECT id, account_code, debit, credit, COALESCE(line_description,'') AS line_description
+                    FROM accounting_lines
+                    WHERE entry_id = %s
+                    ORDER BY id
+                """, (pay_entry_id,))
+                existing_pay_lines = cur.fetchall()
 
-    except Exception:
-        conn.rollback()
-        raise
+                current_debit_ap = 0.0
+                for l in existing_pay_lines:
+                    if str(l["account_code"]) == str(ap_account):
+                        current_debit_ap = float(l["debit"] or 0)
+                        break
 
-    finally:
-        cur.close()
+                needs_amount_fix = abs(round(current_debit_ap, 2) - total) > 0.01
+
+                cur.execute("""
+                    UPDATE accounting_lines
+                    SET line_description = %s
+                    WHERE entry_id = %s
+                      AND (line_description IS NULL OR BTRIM(line_description) = '')
+                """, (payment_detail, pay_entry_id))
+
+                if needs_amount_fix:
+                    cur.execute("""
+                        UPDATE accounting_lines
+                        SET debit = %s, credit = 0
+                        WHERE entry_id = %s
+                          AND account_code = %s
+                    """, (total, pay_entry_id, ap_account))
+
+                    cur.execute("""
+                        UPDATE accounting_lines
+                        SET debit = 0, credit = %s
+                        WHERE entry_id = %s
+                          AND account_code = %s
+                    """, (total, pay_entry_id, bank_account))
+
+    conn.commit()

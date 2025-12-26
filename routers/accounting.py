@@ -468,3 +468,84 @@ def sync_collections(conn=Depends(get_db)):
         "message": "Collections sincronizadas con Accounting"
     }
 
+
+
+@router.post("/sync/cash-app")
+def sync_cash_app_to_accounting(conn=Depends(get_db)):
+
+    from services.accounting_auto import create_accounting_entry
+    from psycopg2.extras import RealDictCursor
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        # 1️⃣ Pagos SIN asiento contable
+        cur.execute("""
+            SELECT
+                c.id,
+                c.numero_documento,
+                c.fecha_pago,
+                c.monto_pagado
+            FROM cash_app c
+            LEFT JOIN accounting_entries a
+              ON a.origin = 'CASH_APP'
+             AND a.origin_id = c.id
+            WHERE a.id IS NULL
+        """)
+
+        pagos = cur.fetchall()
+        creados = 0
+
+        for p in pagos:
+            cash_id = p["id"]
+            numero = p["numero_documento"]
+            fecha = p["fecha_pago"]
+            monto = float(p["monto_pagado"] or 0)
+
+            if monto <= 0:
+                continue
+
+            period = fecha.strftime("%Y-%m")
+
+            lines = [
+                {
+                    "account_code": "1010",   # 🔁 Bancos (ajusta si tu catálogo usa otro)
+                    "account_name": "Bancos",
+                    "debit": monto,
+                    "credit": 0,
+                    "description": f"Pago factura {numero}"
+                },
+                {
+                    "account_code": "1101",
+                    "account_name": "Cuentas por cobrar",
+                    "debit": 0,
+                    "credit": monto,
+                    "description": f"Pago factura {numero}"
+                }
+            ]
+
+            create_accounting_entry(
+                conn=conn,
+                entry_date=fecha,
+                period=period,
+                description=f"Pago de factura {numero}",
+                origin="CASH_APP",
+                origin_id=cash_id,
+                lines=lines
+            )
+
+            creados += 1
+
+        conn.commit()
+
+        return {
+            "status": "ok",
+            "entries_created": creados
+        }
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(500, str(e))
+
+    finally:
+        cur.close()

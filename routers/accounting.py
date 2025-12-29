@@ -471,133 +471,19 @@ def sync_collections(conn=Depends(get_db)):
 
 
 @router.post("/sync/cash-app")
-def sync_cash_app_to_accounting(conn=Depends(get_db)):
-
-    from services.accounting_auto import create_accounting_entry
-    from psycopg2.extras import RealDictCursor
-    from datetime import datetime
-    from fastapi import HTTPException
-
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-
+def sync_cash_app(conn=Depends(get_db)):
     try:
-        cur.execute("""
-            SELECT
-                c.id,
-                c.numero_documento,
-                c.fecha_pago,
-                c.monto_pagado,
-                c.comision,
-                a.id AS entry_id
-            FROM cash_app c
-            LEFT JOIN accounting_entries a
-              ON a.origin = 'CASH_APP'
-             AND a.origin_id = c.id
-            ORDER BY c.id
-        """)
-        pagos = cur.fetchall()
-
-        creados = 0
-        corregidos = 0
-
-        for p in pagos:
-            cash_id = p["id"]
-            numero = p["numero_documento"]
-            fecha = p["fecha_pago"]
-
-            if not fecha:
-                continue
-
-            if isinstance(fecha, datetime):
-                fecha = fecha.date()
-
-            monto = float(p["monto_pagado"] or 0)
-            comision = abs(float(p["comision"] or 0))
-
-            if monto <= 0:
-                continue
-
-            # TC POR FECHA
-            cur.execute("""
-                SELECT rate FROM exchange_rate
-                WHERE rate_date = %s
-            """, (fecha,))
-            tc_row = cur.fetchone()
-            if not tc_row:
-                raise Exception(f"TC no encontrado para {fecha}")
-
-            tc = float(tc_row["rate"])
-
-            monto_crc = round(monto * tc, 2)
-            comision_crc = round(comision * tc, 2)
-            banco_crc = round(monto_crc - comision_crc, 2)
-
-            period = fecha.strftime("%Y-%m")
-            detail = f"Pago factura {numero}"
-
-            lines = []
-
-            if banco_crc > 0:
-                lines.append({
-                    "account_code": "1010",
-                    "account_name": "Bancos",
-                    "debit": banco_crc,
-                    "credit": 0,
-                    "line_description": detail
-                })
-
-            if comision_crc > 0:
-                lines.append({
-                    "account_code": "5203",
-                    "account_name": "Comisiones bancarias",
-                    "debit": comision_crc,
-                    "credit": 0,
-                    "line_description": f"Comisión bancaria - {detail}"
-                })
-
-            lines.append({
-                "account_code": "1101",
-                "account_name": "Cuentas por cobrar",
-                "debit": 0,
-                "credit": monto_crc,
-                "line_description": detail
-            })
-
-            # VALIDACIÓN PARTIDA DOBLE
-            td = round(sum(l["debit"] for l in lines), 2)
-            tc_sum = round(sum(l["credit"] for l in lines), 2)
-            if td != tc_sum:
-                raise Exception("Asiento CASH_APP descuadrado")
-
-            create_accounting_entry(
-                conn=conn,
-                entry_date=fecha,
-                period=period,
-                description=f"{detail} (TC {tc})",
-                origin="CASH_APP",
-                origin_id=cash_id,
-                lines=lines
-            )
-
-            if p["entry_id"]:
-                corregidos += 1
-            else:
-                creados += 1
-
-        conn.commit()
+        from services.accounting_auto import sync_cash_app_to_accounting
+        sync_cash_app_to_accounting(conn)
 
         return {
             "status": "ok",
-            "entries_created": creados,
-            "entries_updated": corregidos
+            "message": "Cash App sincronizado a Accounting"
         }
 
     except Exception as e:
         conn.rollback()
-        raise HTTPException(500, str(e))
-
-    finally:
-        cur.close()
+        raise HTTPException(500, repr(e))
 
 
 

@@ -285,6 +285,135 @@ def sync_collections_to_accounting(conn):
 
 
 
+def sync_cash_app_to_accounting(conn):
+
+    from psycopg2.extras import RealDictCursor
+    from datetime import date, datetime
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    # ============================================================
+    # 0️⃣ TRAER TODOS LOS PAGOS CASH_APP
+    # ============================================================
+    cur.execute("""
+        SELECT
+            c.id,
+            c.numero_documento,
+            c.fecha_pago,
+            c.monto_pagado,
+            c.comision,
+            a.id AS entry_id
+        FROM cash_app c
+        LEFT JOIN accounting_entries a
+          ON a.origin = 'CASH_APP'
+         AND a.origin_id = c.id
+        ORDER BY c.id
+    """)
+    pagos = cur.fetchall()
+
+    for p in pagos:
+
+        cash_id = p["id"]
+        numero = p["numero_documento"] or ""
+        fecha_pago = p["fecha_pago"]
+
+        if not fecha_pago:
+            continue
+
+        if isinstance(fecha_pago, datetime):
+            fecha = fecha_pago.date()
+        else:
+            fecha = fecha_pago
+
+        monto = float(p["monto_pagado"] or 0)
+        comision = abs(float(p["comision"] or 0))
+
+        if monto <= 0:
+            continue
+
+        # ============================================================
+        # 1️⃣ TC POR FECHA DEL PAGO
+        # ============================================================
+        cur.execute("""
+            SELECT rate
+            FROM exchange_rate
+            WHERE rate_date = %s
+        """, (fecha,))
+        row_tc = cur.fetchone()
+        if not row_tc:
+            raise Exception(f"TC no encontrado para fecha {fecha}")
+
+        tc = float(row_tc["rate"])
+
+        monto_crc = round(monto * tc, 2)
+        comision_crc = round(comision * tc, 2)
+        banco_crc = round(monto_crc - comision_crc, 2)
+
+        if banco_crc < 0:
+            raise Exception(
+                f"Comisión mayor al monto en cash_app id={cash_id}"
+            )
+
+        period = fecha.strftime("%Y-%m")
+        detail = f"Pago factura {numero}"
+
+        # ============================================================
+        # 2️⃣ ¿EXISTE ASIENTO?
+        # ============================================================
+        entry_id = p["entry_id"]
+
+        # ============================================================
+        # 3️⃣ CREAR ASIENTO
+        # ============================================================
+        if not entry_id:
+            cur.execute("""
+                INSERT INTO accounting_entries
+                (entry_date, period, description, origin, origin_id, created_by)
+                VALUES (%s, %s, %s, 'CASH_APP', %s, 'SYSTEM')
+                RETURNING id
+            """, (fecha, period, detail, cash_id))
+            entry_id = cur.fetchone()["id"]
+
+        # ============================================================
+        # 4️⃣ LIMPIAR LÍNEAS EXISTENTES (CLAVE)
+        # ============================================================
+        cur.execute("""
+            DELETE FROM accounting_lines
+            WHERE entry_id = %s
+        """, (entry_id,))
+
+        # ============================================================
+        # 5️⃣ RECREAR LÍNEAS (COMO ITP / COLLECTIONS)
+        # ============================================================
+
+        # Bancos (neto)
+        if banco_crc > 0:
+            cur.execute("""
+                INSERT INTO accounting_lines
+                (entry_id, account_code, account_name, debit, credit, line_description)
+                VALUES (%s, '1010', 'Bancos', %s, 0, %s)
+            """, (entry_id, banco_crc, detail))
+
+        # Comisión bancaria
+        if comision_crc > 0:
+            cur.execute("""
+                INSERT INTO accounting_lines
+                (entry_id, account_code, account_name, debit, credit, line_description)
+                VALUES (%s, '5203', 'Comisiones bancarias', %s, 0, %s)
+            """, (entry_id, comision_crc, f"Comisión - {detail}"))
+
+        # Cuentas por cobrar (total)
+        cur.execute("""
+            INSERT INTO accounting_lines
+            (entry_id, account_code, account_name, debit, credit, line_description)
+            VALUES (%s, '1101', 'Cuentas por cobrar', 0, %s, %s)
+        """, (entry_id, monto_crc, detail))
+
+    conn.commit()
+
+
+
+
 def sync_itp_to_accounting(conn):
     """
     Sincroniza payment_obligations → accounting

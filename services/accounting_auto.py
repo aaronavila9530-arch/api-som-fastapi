@@ -69,7 +69,7 @@ def sync_collections_to_accounting(conn):
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     # ============================================================
-    # OBTENER TC DEL DÍA (OBLIGATORIO)
+    # 1️⃣ OBTENER TC DEL DÍA (OBLIGATORIO)
     # ============================================================
     today = date.today()
 
@@ -82,12 +82,15 @@ def sync_collections_to_accounting(conn):
 
     row_tc = cur.fetchone()
     if not row_tc:
-        raise Exception("Tipo de cambio del día no encontrado. No se puede contabilizar Collections.")
+        raise Exception(
+            "Tipo de cambio del día no encontrado. "
+            "No se puede contabilizar Collections."
+        )
 
     tc = float(row_tc["rate"])
 
     # ============================================================
-    # COLLECTIONS SIN ASIENTO
+    # 2️⃣ COLLECTIONS SIN ASIENTO CONTABLE
     # ============================================================
     cur.execute("""
         SELECT c.*
@@ -99,24 +102,26 @@ def sync_collections_to_accounting(conn):
               AND ae.origin_id = c.id
         )
     """)
-
     rows = cur.fetchall()
 
+    # ============================================================
+    # 3️⃣ PROCESAR UNA A UNA
+    # ============================================================
     for c in rows:
 
         numero = c["numero_documento"]
 
         # ------------------------------
-        # MONTO ORIGINAL
+        # MONTO ORIGINAL (USD)
         # ------------------------------
-        total = float(c["total"] or 0)
-        if total <= 0:
+        total_usd = float(c.get("total") or 0)
+        if total_usd <= 0:
             continue
 
-        # 🔥 APLICAR TC
-        total = round(total * tc, 2)
+        # 🔥 CONVERSIÓN OBLIGATORIA A CRC
+        total_crc = round(total_usd * tc, 2)
 
-        fecha = c["fecha_emision"] or date.today()
+        fecha = c.get("fecha_emision") or date.today()
         period = fecha.strftime("%Y-%m")
 
         # ==============================
@@ -130,17 +135,20 @@ def sync_collections_to_accounting(conn):
         """, (numero,))
 
         srv = cur.fetchone()
-        pais = (srv["pais"] if srv else "").lower()
-
-        if pais == "costa rica":
-            subtotal = round(total / 1.13, 2)
-            iva = round(total - subtotal, 2)
-        else:
-            subtotal = total
-            iva = 0
+        pais = (srv["pais"] if srv else "").strip().lower()
 
         # ==============================
-        # Crear ENTRY (cabecera)
+        # IVA SOLO PARA COSTA RICA
+        # ==============================
+        if pais == "costa rica":
+            subtotal = round(total_crc / 1.13, 2)
+            iva = round(total_crc - subtotal, 2)
+        else:
+            subtotal = total_crc
+            iva = 0.0
+
+        # ==============================
+        # CREAR ENTRY (CABECERA)
         # ==============================
         cur.execute("""
             INSERT INTO accounting_entries (
@@ -156,7 +164,7 @@ def sync_collections_to_accounting(conn):
         """, (
             fecha,
             period,
-            f"From Collections {numero}",
+            f"From Collections {numero} (TC {tc})",
             "COLLECTIONS",
             c["id"]
         ))
@@ -164,34 +172,50 @@ def sync_collections_to_accounting(conn):
         entry_id = cur.fetchone()["id"]
 
         # ==============================
-        # Líneas contables
+        # LÍNEAS CONTABLES (CRC)
         # ==============================
+
+        # 1) Cuentas por cobrar (TOTAL)
         cur.execute("""
             INSERT INTO accounting_lines
             (entry_id, account_code, account_name, debit, credit, line_description)
             VALUES (%s, %s, %s, %s, %s, %s)
         """, (
-            entry_id, "1101", "Cuentas por cobrar",
-            total, 0, f"From Collections {numero}"
+            entry_id,
+            "1101",
+            "Cuentas por cobrar",
+            total_crc,
+            0,
+            f"From Collections {numero}"
         ))
 
+        # 2) Ingresos (SUBTOTAL)
         cur.execute("""
             INSERT INTO accounting_lines
             (entry_id, account_code, account_name, debit, credit, line_description)
             VALUES (%s, %s, %s, %s, %s, %s)
         """, (
-            entry_id, "4101", "Ingresos por servicios",
-            0, subtotal, f"From Collections {numero}"
+            entry_id,
+            "4101",
+            "Ingresos por servicios",
+            0,
+            subtotal,
+            f"From Collections {numero}"
         ))
 
+        # 3) IVA por pagar (SI APLICA)
         if iva > 0:
             cur.execute("""
                 INSERT INTO accounting_lines
                 (entry_id, account_code, account_name, debit, credit, line_description)
                 VALUES (%s, %s, %s, %s, %s, %s)
             """, (
-                entry_id, "2108", "IVA por pagar",
-                0, iva, f"From Collections {numero}"
+                entry_id,
+                "2108",
+                "IVA por pagar",
+                0,
+                iva,
+                f"From Collections {numero}"
             ))
 
     conn.commit()

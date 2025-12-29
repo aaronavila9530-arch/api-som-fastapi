@@ -8,7 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 # Conexión SQL
 import database
 
+# ============================================================
 # Routers
+# ============================================================
+
 from routers.empleados import router as empleados_router
 from routers.surveyores import router as surveyores_router
 from routers.clientes import router as clientes_router
@@ -28,12 +31,13 @@ from routers.dispute_management import router as dispute_management_router
 from routers.dispute_notes import router as dispute_notes_router
 from routers.disputa import router as disputa_router
 from routers.invoice_to_pay import router as invoice_to_pay_router
+
+# Accounting (⚠️ UN SOLO ROUTER)
 from routers.accounting import router as accounting_router
+from routers.accounting_adjustments import router as accounting_adjustments_router
+
+
 from routers.exchange_rate import router as exchange_rate_router
-from routers import accounting_adjustments
-from routers import accounting_reverse
-
-
 
 # ============================================================
 # CONFIGURACIÓN FASTAPI
@@ -103,8 +107,9 @@ def get_puertos(pais: str):
     return [row[0] for row in data]
 
 # ============================================================
-# INTEGRACIÓN DE ROUTERS (CRUD maestros)
+# Include Routers
 # ============================================================
+
 app.include_router(empleados_router)
 app.include_router(surveyores_router)
 app.include_router(clientes_router)
@@ -124,10 +129,11 @@ app.include_router(dispute_management_router)
 app.include_router(dispute_notes_router)
 app.include_router(disputa_router)
 app.include_router(invoice_to_pay_router)
+
 app.include_router(accounting_router)
+app.include_router(accounting_adjustments_router)
+
 app.include_router(exchange_rate_router)
-app.include_router(accounting_adjustments.router)
-app.include_router(accounting_reverse.router)
 
 # ============================================================
 # EJECUCIÓN LOCAL

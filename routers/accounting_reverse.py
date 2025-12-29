@@ -4,7 +4,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException
 from psycopg2.extras import RealDictCursor
-from datetime import datetime
+from datetime import date
 from database import get_db
 
 router = APIRouter(
@@ -33,7 +33,7 @@ def reverse_accounting_entry(entry_id: int, conn=Depends(get_db)):
         if not entry:
             raise HTTPException(404, "Asiento contable no encontrado")
 
-        if entry.get("reversed"):
+        if entry.get("reversed") is True:
             raise HTTPException(
                 400,
                 f"El asiento {entry_id} ya fue reversado"
@@ -59,7 +59,9 @@ def reverse_accounting_entry(entry_id: int, conn=Depends(get_db)):
         # ====================================================
         # 3️⃣ CREAR NUEVO ASIENTO DE REVERSO
         # ====================================================
-        reverse_description = f"Reverso asiento #{entry_id}"
+        reverse_description = f"Reverso asiento {entry_id}"
+        today = date.today()
+        period = today.strftime("%Y-%m")
 
         cur.execute("""
             INSERT INTO accounting_entries (
@@ -73,8 +75,8 @@ def reverse_accounting_entry(entry_id: int, conn=Depends(get_db)):
             VALUES (%s, %s, %s, %s, %s, 'SYSTEM')
             RETURNING id
         """, (
-            entry["entry_date"],
-            entry["period"],
+            today,
+            period,
             reverse_description,
             "REVERSAL",
             entry_id
@@ -83,7 +85,7 @@ def reverse_accounting_entry(entry_id: int, conn=Depends(get_db)):
         reverse_entry_id = cur.fetchone()["id"]
 
         # ====================================================
-        # 4️⃣ CREAR LÍNEAS INVERTIDAS
+        # 4️⃣ CREAR LÍNEAS INVERTIDAS (DEBE ↔ HABER)
         # ====================================================
         for ln in lines:
             debit = float(ln.get("debit") or 0)
@@ -103,9 +105,9 @@ def reverse_accounting_entry(entry_id: int, conn=Depends(get_db)):
                 reverse_entry_id,
                 ln["account_code"],
                 ln["account_name"],
-                credit,   # 🔁 INVERSIÓN
-                debit,    # 🔁 INVERSIÓN
-                f"Reverso: {ln.get('line_description') or ''}"
+                credit,   # 🔁 INVERTIDO
+                debit,    # 🔁 INVERTIDO
+                reverse_description
             ))
 
         # ====================================================

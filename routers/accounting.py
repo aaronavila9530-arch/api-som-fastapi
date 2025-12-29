@@ -475,103 +475,284 @@ def sync_cash_app_to_accounting(conn=Depends(get_db)):
 
     from services.accounting_auto import create_accounting_entry
     from psycopg2.extras import RealDictCursor
-    from datetime import date
+    from datetime import date, datetime
     from fastapi import HTTPException
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
         # ============================================================
-        # 0️⃣ OBTENER TC DEL DÍA (OBLIGATORIO)
-        # ============================================================
-        today = date.today()
-
-        cur.execute("""
-            SELECT rate
-            FROM exchange_rate
-            WHERE rate_date = %s
-            LIMIT 1
-        """, (today,))
-
-        tc_row = cur.fetchone()
-        if not tc_row:
-            raise Exception(
-                "Tipo de cambio del día no encontrado. "
-                "No se puede contabilizar CASH APP."
-            )
-
-        tc = float(tc_row["rate"])
-
-        # ============================================================
-        # 1️⃣ PAGOS SIN ASIENTO CONTABLE
+        # 1️⃣ TRAER TODOS LOS PAGOS (CON O SIN ASIENTO)
+        #    - Si NO existe asiento: crear
+        #    - Si YA existe asiento: corregir (montos + comisión)
         # ============================================================
         cur.execute("""
             SELECT
                 c.id,
                 c.numero_documento,
                 c.fecha_pago,
-                c.monto_pagado
+                c.monto_pagado,
+                c.comision,
+                a.id AS entry_id
             FROM cash_app c
             LEFT JOIN accounting_entries a
               ON a.origin = 'CASH_APP'
              AND a.origin_id = c.id
-            WHERE a.id IS NULL
+            ORDER BY c.id ASC
         """)
 
         pagos = cur.fetchall()
         creados = 0
+        corregidos = 0
 
         # ============================================================
         # 2️⃣ PROCESAR UNO A UNO
         # ============================================================
         for p in pagos:
             cash_id = p["id"]
-            numero = p["numero_documento"]
-            fecha = p["fecha_pago"]
-            monto_raw = float(p["monto_pagado"] or 0)
+            numero = p.get("numero_documento") or ""
+            fecha_pago = p.get("fecha_pago")
+            entry_id = p.get("entry_id")
+
+            if not fecha_pago:
+                continue
+
+            # fecha_pago puede venir datetime o date
+            if isinstance(fecha_pago, datetime):
+                tc_date = fecha_pago.date()
+                entry_date = fecha_pago.date()
+            else:
+                tc_date = fecha_pago
+                entry_date = fecha_pago
+
+            # ---- Montos ----
+            monto_raw = float(p.get("monto_pagado") or 0)
+            comision_raw = float(p.get("comision") or 0)
 
             if monto_raw <= 0:
                 continue
 
-            # 🔥 CONVERSIÓN OBLIGATORIA A CRC
+            if comision_raw < 0:
+                comision_raw = abs(comision_raw)
+
+            # ============================================================
+            # 3️⃣ OBTENER TC SEGÚN FECHA DEL PAGO (NO HOY)
+            # ============================================================
+            cur.execute("""
+                SELECT rate
+                FROM exchange_rate
+                WHERE rate_date = %s
+                LIMIT 1
+            """, (tc_date,))
+            tc_row = cur.fetchone()
+
+            if not tc_row:
+                raise Exception(
+                    f"Tipo de cambio no encontrado para la fecha {tc_date}. "
+                    "Primero obtenga el TC del día en Accounting."
+                )
+
+            tc = float(tc_row["rate"])
+
+            # ============================================================
+            # 4️⃣ CONVERSIÓN A CRC (monto y comisión)
+            # ============================================================
             monto_crc = round(monto_raw * tc, 2)
+            comision_crc = round(comision_raw * tc, 2)
+            banco_crc = round(monto_crc - comision_crc, 2)
 
-            period = fecha.strftime("%Y-%m")
+            if banco_crc < 0:
+                raise Exception(
+                    f"Comisión mayor al monto en cash_app id={cash_id}. "
+                    f"monto_pagado={monto_raw}, comision={comision_raw}"
+                )
 
-            lines = [
-                {
-                    "account_code": "1010",
-                    "account_name": "Bancos",
-                    "debit": monto_crc,
-                    "credit": 0,
-                    "line_description": f"Pago factura {numero}"
-                },
-                {
+            period = entry_date.strftime("%Y-%m")
+            detail = f"Pago factura {numero}"
+
+            # ============================================================
+            # 5️⃣ SI NO EXISTE ASIENTO → CREAR
+            # ============================================================
+            if not entry_id:
+                lines = []
+
+                # 1) Bancos (neto)
+                if banco_crc > 0:
+                    lines.append({
+                        "account_code": "1010",
+                        "account_name": "Bancos",
+                        "debit": banco_crc,
+                        "credit": 0,
+                        "line_description": detail
+                    })
+
+                # 2) Comisión (si existe)
+                if comision_crc > 0:
+                    lines.append({
+                        "account_code": "5203",  # ajusta si tu catálogo usa otro
+                        "account_name": "Comisiones bancarias",
+                        "debit": comision_crc,
+                        "credit": 0,
+                        "line_description": f"Comisión bancaria - {detail}"
+                    })
+
+                # 3) CxC (total pagado)
+                lines.append({
                     "account_code": "1101",
                     "account_name": "Cuentas por cobrar",
                     "debit": 0,
                     "credit": monto_crc,
-                    "line_description": f"Pago factura {numero}"
-                }
-            ]
+                    "line_description": detail
+                })
 
-            create_accounting_entry(
-                conn=conn,
-                entry_date=fecha,
-                period=period,
-                description=f"Pago de factura {numero}",
-                origin="CASH_APP",
-                origin_id=cash_id,
-                lines=lines
-            )
+                # Validación partida doble
+                total_debit = round(sum(float(x.get("debit") or 0) for x in lines), 2)
+                total_credit = round(sum(float(x.get("credit") or 0) for x in lines), 2)
+                if abs(total_debit - total_credit) > 0.01:
+                    raise Exception(
+                        f"Asiento descuadrado CASH_APP id={cash_id}. "
+                        f"Debe={total_debit} Haber={total_credit} "
+                        f"(monto_crc={monto_crc}, comision_crc={comision_crc}, banco_crc={banco_crc})"
+                    )
 
-            creados += 1
+                create_accounting_entry(
+                    conn=conn,
+                    entry_date=entry_date,
+                    period=period,
+                    description=f"{detail} (TC {tc})",
+                    origin="CASH_APP",
+                    origin_id=cash_id,
+                    lines=lines
+                )
+
+                creados += 1
+                continue
+
+            # ============================================================
+            # 6️⃣ SI YA EXISTE → CORREGIR (montos + agregar/quitar comisión)
+            # ============================================================
+
+            # 6.1) Asegurar descripción y fecha/periodo en cabecera
+            cur.execute("""
+                UPDATE accounting_entries
+                SET entry_date = %s,
+                    period = %s,
+                    description = %s
+                WHERE id = %s
+            """, (entry_date, period, f"{detail} (TC {tc})", entry_id))
+
+            # 6.2) Traer líneas actuales
+            cur.execute("""
+                SELECT id, account_code, debit, credit, COALESCE(line_description,'') AS line_description
+                FROM accounting_lines
+                WHERE entry_id = %s
+                ORDER BY id
+            """, (entry_id,))
+            existing_lines = cur.fetchall()
+
+            # Helpers para localizar líneas
+            def _find_line(code: str):
+                for ln in existing_lines:
+                    if str(ln.get("account_code")) == str(code):
+                        return ln
+                return None
+
+            bank_line = _find_line("1010")
+            ar_line = _find_line("1101")
+            fee_line = _find_line("5203")
+
+            # 6.3) Asegurar/crear línea Bancos (1010)
+            if banco_crc > 0:
+                if bank_line:
+                    cur.execute("""
+                        UPDATE accounting_lines
+                        SET debit = %s, credit = 0,
+                            account_name = %s,
+                            line_description = %s
+                        WHERE id = %s
+                    """, (banco_crc, "Bancos", detail, bank_line["id"]))
+                else:
+                    cur.execute("""
+                        INSERT INTO accounting_lines
+                        (entry_id, account_code, account_name, debit, credit, line_description)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, (entry_id, "1010", "Bancos", banco_crc, 0, detail))
+            else:
+                # Si por alguna razón neto quedara 0, eliminar línea de banco si existiera
+                if bank_line:
+                    cur.execute("""
+                        DELETE FROM accounting_lines
+                        WHERE id = %s
+                    """, (bank_line["id"],))
+
+            # 6.4) Asegurar/crear línea CxC (1101) por el total pagado
+            if ar_line:
+                cur.execute("""
+                    UPDATE accounting_lines
+                    SET debit = 0, credit = %s,
+                        account_name = %s,
+                        line_description = %s
+                    WHERE id = %s
+                """, (monto_crc, "Cuentas por cobrar", detail, ar_line["id"]))
+            else:
+                cur.execute("""
+                    INSERT INTO accounting_lines
+                    (entry_id, account_code, account_name, debit, credit, line_description)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (entry_id, "1101", "Cuentas por cobrar", 0, monto_crc, detail))
+
+            # 6.5) Comisión: si comision_crc > 0 debe existir 5203, si no debe eliminarse
+            if comision_crc > 0:
+                fee_desc = f"Comisión bancaria - {detail}"
+                if fee_line:
+                    cur.execute("""
+                        UPDATE accounting_lines
+                        SET debit = %s, credit = 0,
+                            account_name = %s,
+                            line_description = %s
+                        WHERE id = %s
+                    """, (comision_crc, "Comisiones bancarias", fee_desc, fee_line["id"]))
+                else:
+                    cur.execute("""
+                        INSERT INTO accounting_lines
+                        (entry_id, account_code, account_name, debit, credit, line_description)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                    """, (entry_id, "5203", "Comisiones bancarias", comision_crc, 0, fee_desc))
+            else:
+                # Si ya no hay comisión, borrar línea si existía (limpia históricos)
+                if fee_line:
+                    cur.execute("""
+                        DELETE FROM accounting_lines
+                        WHERE id = %s
+                    """, (fee_line["id"],))
+
+            # 6.6) Validación final de partida doble (re-leer totales)
+            cur.execute("""
+                SELECT
+                    COALESCE(SUM(debit),0) AS total_debit,
+                    COALESCE(SUM(credit),0) AS total_credit
+                FROM accounting_lines
+                WHERE entry_id = %s
+            """, (entry_id,))
+            sums = cur.fetchone() or {}
+            td = round(float(sums.get("total_debit") or 0), 2)
+            tc_sum = round(float(sums.get("total_credit") or 0), 2)
+
+            if abs(td - tc_sum) > 0.01:
+                raise Exception(
+                    f"Asiento CASH_APP descuadrado luego de corrección. "
+                    f"entry_id={entry_id} cash_id={cash_id} Debe={td} Haber={tc_sum} "
+                    f"(monto_crc={monto_crc}, comision_crc={comision_crc}, banco_crc={banco_crc})"
+                )
+
+            corregidos += 1
 
         conn.commit()
 
         return {
             "status": "ok",
-            "entries_created": creados
+            "entries_created": creados,
+            "entries_updated": corregidos
         }
 
     except Exception as e:

@@ -294,6 +294,7 @@ def sync_cash_app_to_accounting(conn):
 
     # ============================================================
     # 0️⃣ TRAER TODOS LOS PAGOS CASH_APP
+    #    (con o sin asiento contable)
     # ============================================================
     cur.execute("""
         SELECT
@@ -314,37 +315,56 @@ def sync_cash_app_to_accounting(conn):
     for p in pagos:
 
         cash_id = p["id"]
-        numero = p["numero_documento"] or ""
-        fecha_pago = p["fecha_pago"]
+        numero = p.get("numero_documento") or ""
+        fecha_pago = p.get("fecha_pago")
 
         if not fecha_pago:
             continue
 
+        # Normalizar fecha
         if isinstance(fecha_pago, datetime):
             fecha = fecha_pago.date()
         else:
             fecha = fecha_pago
 
-        monto = float(p["monto_pagado"] or 0)
-        comision = abs(float(p["comision"] or 0))
+        monto = float(p.get("monto_pagado") or 0)
+        comision = abs(float(p.get("comision") or 0))
 
         if monto <= 0:
             continue
 
         # ============================================================
-        # 1️⃣ TC POR FECHA DEL PAGO
+        # 1️⃣ OBTENER TC POR FECHA DEL PAGO
+        #     → fallback al último TC disponible
         # ============================================================
         cur.execute("""
             SELECT rate
             FROM exchange_rate
             WHERE rate_date = %s
+            LIMIT 1
         """, (fecha,))
         row_tc = cur.fetchone()
+
         if not row_tc:
-            raise Exception(f"TC no encontrado para fecha {fecha}")
+            # 🔁 Fallback: último TC disponible
+            cur.execute("""
+                SELECT rate
+                FROM exchange_rate
+                ORDER BY rate_date DESC
+                LIMIT 1
+            """)
+            row_tc = cur.fetchone()
+
+            if not row_tc:
+                raise Exception(
+                    "No existe ningún Tipo de Cambio registrado en el sistema."
+                )
 
         tc = float(row_tc["rate"])
 
+        # ============================================================
+        # 2️⃣ CONVERSIÓN A CRC
+        # ============================================================
         monto_crc = round(monto * tc, 2)
         comision_crc = round(comision * tc, 2)
         banco_crc = round(monto_crc - comision_crc, 2)
@@ -358,12 +378,12 @@ def sync_cash_app_to_accounting(conn):
         detail = f"Pago factura {numero}"
 
         # ============================================================
-        # 2️⃣ ¿EXISTE ASIENTO?
+        # 3️⃣ ¿EXISTE ASIENTO?
         # ============================================================
-        entry_id = p["entry_id"]
+        entry_id = p.get("entry_id")
 
         # ============================================================
-        # 3️⃣ CREAR ASIENTO
+        # 4️⃣ CREAR ASIENTO SI NO EXISTE
         # ============================================================
         if not entry_id:
             cur.execute("""
@@ -373,9 +393,18 @@ def sync_cash_app_to_accounting(conn):
                 RETURNING id
             """, (fecha, period, detail, cash_id))
             entry_id = cur.fetchone()["id"]
+        else:
+            # Asegurar cabecera actualizada
+            cur.execute("""
+                UPDATE accounting_entries
+                SET entry_date = %s,
+                    period = %s,
+                    description = %s
+                WHERE id = %s
+            """, (fecha, period, detail, entry_id))
 
         # ============================================================
-        # 4️⃣ LIMPIAR LÍNEAS EXISTENTES (CLAVE)
+        # 5️⃣ LIMPIAR LÍNEAS EXISTENTES (CLAVE)
         # ============================================================
         cur.execute("""
             DELETE FROM accounting_lines
@@ -383,7 +412,7 @@ def sync_cash_app_to_accounting(conn):
         """, (entry_id,))
 
         # ============================================================
-        # 5️⃣ RECREAR LÍNEAS (COMO ITP / COLLECTIONS)
+        # 6️⃣ RECREAR LÍNEAS CONTABLES
         # ============================================================
 
         # Bancos (neto)
@@ -410,7 +439,6 @@ def sync_cash_app_to_accounting(conn):
         """, (entry_id, monto_crc, detail))
 
     conn.commit()
-
 
 
 

@@ -475,11 +475,36 @@ def sync_cash_app_to_accounting(conn=Depends(get_db)):
 
     from services.accounting_auto import create_accounting_entry
     from psycopg2.extras import RealDictCursor
+    from datetime import date
+    from fastapi import HTTPException
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        # 1️⃣ Pagos SIN asiento contable
+        # ============================================================
+        # 0️⃣ OBTENER TC DEL DÍA (OBLIGATORIO)
+        # ============================================================
+        today = date.today()
+
+        cur.execute("""
+            SELECT rate
+            FROM exchange_rate
+            WHERE rate_date = %s
+            LIMIT 1
+        """, (today,))
+
+        tc_row = cur.fetchone()
+        if not tc_row:
+            raise Exception(
+                "Tipo de cambio del día no encontrado. "
+                "No se puede contabilizar CASH APP."
+            )
+
+        tc = float(tc_row["rate"])
+
+        # ============================================================
+        # 1️⃣ PAGOS SIN ASIENTO CONTABLE
+        # ============================================================
         cur.execute("""
             SELECT
                 c.id,
@@ -496,31 +521,37 @@ def sync_cash_app_to_accounting(conn=Depends(get_db)):
         pagos = cur.fetchall()
         creados = 0
 
+        # ============================================================
+        # 2️⃣ PROCESAR UNO A UNO
+        # ============================================================
         for p in pagos:
             cash_id = p["id"]
             numero = p["numero_documento"]
             fecha = p["fecha_pago"]
-            monto = float(p["monto_pagado"] or 0)
+            monto_raw = float(p["monto_pagado"] or 0)
 
-            if monto <= 0:
+            if monto_raw <= 0:
                 continue
+
+            # 🔥 CONVERSIÓN OBLIGATORIA A CRC
+            monto_crc = round(monto_raw * tc, 2)
 
             period = fecha.strftime("%Y-%m")
 
             lines = [
                 {
-                    "account_code": "1010",   # 🔁 Bancos (ajusta si tu catálogo usa otro)
+                    "account_code": "1010",
                     "account_name": "Bancos",
-                    "debit": monto,
+                    "debit": monto_crc,
                     "credit": 0,
-                    "description": f"Pago factura {numero}"
+                    "line_description": f"Pago factura {numero}"
                 },
                 {
                     "account_code": "1101",
                     "account_name": "Cuentas por cobrar",
                     "debit": 0,
-                    "credit": monto,
-                    "description": f"Pago factura {numero}"
+                    "credit": monto_crc,
+                    "line_description": f"Pago factura {numero}"
                 }
             ]
 

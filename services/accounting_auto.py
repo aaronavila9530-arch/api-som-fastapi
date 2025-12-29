@@ -110,23 +110,17 @@ def sync_collections_to_accounting(conn):
     for c in rows:
 
         numero = c["numero_documento"]
+        total_raw = float(c.get("total") or 0)
 
-        # ------------------------------
-        # MONTO ORIGINAL (USD)
-        # ------------------------------
-        total_usd = float(c.get("total") or 0)
-        if total_usd <= 0:
+        if total_raw <= 0:
             continue
-
-        # 🔥 CONVERSIÓN OBLIGATORIA A CRC
-        total_crc = round(total_usd * tc, 2)
 
         fecha = c.get("fecha_emision") or date.today()
         period = fecha.strftime("%Y-%m")
 
-        # ==============================
-        # País desde servicios
-        # ==============================
+        # ========================================================
+        # País desde servicios (CLAVE)
+        # ========================================================
         cur.execute("""
             SELECT pais
             FROM servicios
@@ -137,9 +131,19 @@ def sync_collections_to_accounting(conn):
         srv = cur.fetchone()
         pais = (srv["pais"] if srv else "").strip().lower()
 
-        # ==============================
-        # IVA SOLO PARA COSTA RICA
-        # ==============================
+        # ========================================================
+        # 🔥 CONVERSIÓN CORRECTA
+        # ========================================================
+        if pais == "costa rica":
+            # Ya viene en CRC
+            total_crc = round(total_raw, 2)
+        else:
+            # Viene en USD → convertir
+            total_crc = round(total_raw * tc, 2)
+
+        # ========================================================
+        # IVA SOLO COSTA RICA
+        # ========================================================
         if pais == "costa rica":
             subtotal = round(total_crc / 1.13, 2)
             iva = round(total_crc - subtotal, 2)
@@ -147,9 +151,9 @@ def sync_collections_to_accounting(conn):
             subtotal = total_crc
             iva = 0.0
 
-        # ==============================
-        # CREAR ENTRY (CABECERA)
-        # ==============================
+        # ========================================================
+        # CREAR ENTRY
+        # ========================================================
         cur.execute("""
             INSERT INTO accounting_entries (
                 entry_date,
@@ -164,18 +168,18 @@ def sync_collections_to_accounting(conn):
         """, (
             fecha,
             period,
-            f"From Collections {numero} (TC {tc})",
+            f"From Collections {numero}",
             "COLLECTIONS",
             c["id"]
         ))
 
         entry_id = cur.fetchone()["id"]
 
-        # ==============================
-        # LÍNEAS CONTABLES (CRC)
-        # ==============================
+        # ========================================================
+        # LÍNEAS CONTABLES
+        # ========================================================
 
-        # 1) Cuentas por cobrar (TOTAL)
+        # CxC
         cur.execute("""
             INSERT INTO accounting_lines
             (entry_id, account_code, account_name, debit, credit, line_description)
@@ -189,7 +193,7 @@ def sync_collections_to_accounting(conn):
             f"From Collections {numero}"
         ))
 
-        # 2) Ingresos (SUBTOTAL)
+        # Ingresos
         cur.execute("""
             INSERT INTO accounting_lines
             (entry_id, account_code, account_name, debit, credit, line_description)
@@ -203,7 +207,7 @@ def sync_collections_to_accounting(conn):
             f"From Collections {numero}"
         ))
 
-        # 3) IVA por pagar (SI APLICA)
+        # IVA por pagar
         if iva > 0:
             cur.execute("""
                 INSERT INTO accounting_lines

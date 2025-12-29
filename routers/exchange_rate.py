@@ -12,7 +12,7 @@ router = APIRouter(
 )
 
 # ============================================================
-# CONFIG BCCR — ÚNICO ENDPOINT VÁLIDO (XML)
+# CONFIG BCCR — ENDPOINT OFICIAL
 # ============================================================
 BCCR_URL = (
     "https://gee.bccr.fi.cr/Indicadores/Suscripciones/WS/"
@@ -23,18 +23,15 @@ BCCR_EMAIL = "aaron.avila@hotmail.es"
 BCCR_TOKEN = "S8L8LAT0VI"
 BCCR_NOMBRE = "MSL"
 
-# Indicadores oficiales BCCR
-INDICADOR_COMPRA = "317"
 INDICADOR_VENTA = "318"
 
 
 # ============================================================
-# HELPER: CONSULTA TC VENTA DESDE BCCR (XML)
+# HELPER: TC VENTA DESDE BCCR (XML)
 # ============================================================
 def _fetch_tc_venta_from_bccr() -> tuple[float, date]:
     """
-    Consulta el Tipo de Cambio de VENTA (Indicador 318)
-    usando SIEMPRE la fecha del día.
+    Consulta TC de VENTA (Indicador 318)
     Retorna: (rate, rate_date)
     """
 
@@ -55,24 +52,22 @@ def _fetch_tc_venta_from_bccr() -> tuple[float, date]:
 
     try:
         root = ET.fromstring(r.text)
-
-        # Namespace oficial del BCCR
         ns = {"ns": "http://ws.sdde.bccr.fi.cr"}
 
         value_node = root.find(".//ns:NUM_VALOR", ns)
         date_node = root.find(".//ns:DES_FECHA", ns)
 
         if value_node is None or date_node is None:
-            raise ValueError("NUM_VALOR o DES_FECHA no encontrados en XML")
+            raise ValueError("NUM_VALOR o DES_FECHA no encontrados")
 
         rate = float(value_node.text)
+        raw_date = date_node.text.strip()
 
-        # ⚠️ CORRECCIÓN CRÍTICA:
-        # BCCR devuelve fecha en formato DD/MM/YYYY
-        rate_date = datetime.strptime(
-            date_node.text.strip(),
-            "%d/%m/%Y"
-        ).date()
+        # ✅ SOPORTA AMBOS FORMATOS DEL BCCR
+        try:
+            rate_date = datetime.fromisoformat(raw_date).date()
+        except ValueError:
+            rate_date = datetime.strptime(raw_date, "%d/%m/%Y").date()
 
         return rate, rate_date
 
@@ -89,17 +84,14 @@ def _fetch_tc_venta_from_bccr() -> tuple[float, date]:
 @router.get("/today")
 def get_today_exchange_rate(conn=Depends(get_db)):
     """
-    Devuelve el Tipo de Cambio del día (VENTA).
-    - Si ya existe en BD → NO consulta BCCR
-    - Si no existe → consulta BCCR y guarda
+    Devuelve TC del día (VENTA)
+    - Si existe en BD → CACHE
+    - Si no existe → BCCR → INSERT
     """
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
     today = date.today()
 
-    # --------------------------------------------------------
-    # 1️⃣ Buscar TC del día en BD
-    # --------------------------------------------------------
     cur.execute("""
         SELECT rate, rate_date
         FROM exchange_rate
@@ -115,14 +107,8 @@ def get_today_exchange_rate(conn=Depends(get_db)):
             "source": "CACHE"
         }
 
-    # --------------------------------------------------------
-    # 2️⃣ Consultar BCCR (VENTA)
-    # --------------------------------------------------------
     rate, rate_date = _fetch_tc_venta_from_bccr()
 
-    # --------------------------------------------------------
-    # 3️⃣ Guardar en BD (sin sobreescribir)
-    # --------------------------------------------------------
     cur.execute("""
         INSERT INTO exchange_rate (rate, rate_date, source)
         VALUES (%s, %s, 'BCCR')
@@ -144,8 +130,7 @@ def get_today_exchange_rate(conn=Depends(get_db)):
 @router.get("/latest")
 def get_latest_exchange_rate(conn=Depends(get_db)):
     """
-    Devuelve el último Tipo de Cambio registrado en BD
-    (NO consulta al BCCR)
+    Devuelve el último TC registrado
     """
 
     cur = conn.cursor(cursor_factory=RealDictCursor)

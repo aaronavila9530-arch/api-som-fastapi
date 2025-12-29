@@ -110,8 +110,10 @@ def sync_collections_to_accounting(conn):
     for c in rows:
 
         numero = c["numero_documento"]
-        total_raw = float(c.get("total") or 0)
+        moneda = (c.get("moneda") or "").upper()
+        nombre_cliente = (c.get("nombre_cliente") or "").strip()
 
+        total_raw = float(c.get("total") or 0)
         if total_raw <= 0:
             continue
 
@@ -119,30 +121,28 @@ def sync_collections_to_accounting(conn):
         period = fecha.strftime("%Y-%m")
 
         # ========================================================
-        # País desde servicios (CLAVE)
+        # CLIENTE → PAÍS
         # ========================================================
         cur.execute("""
             SELECT pais
-            FROM servicios
-            WHERE factura = %s
+            FROM cliente
+            WHERE LOWER(nombrecomercial) = LOWER(%s)
             LIMIT 1
-        """, (numero,))
+        """, (nombre_cliente,))
 
-        srv = cur.fetchone()
-        pais = (srv["pais"] if srv else "").strip().lower()
+        cli = cur.fetchone()
+        pais = (cli["pais"] if cli else "").strip().lower()
 
         # ========================================================
-        # 🔥 CONVERSIÓN CORRECTA
+        # 🔥 CONVERSIÓN MONEDA
         # ========================================================
-        if pais == "costa rica":
-            # Ya viene en CRC
-            total_crc = round(total_raw, 2)
-        else:
-            # Viene en USD → convertir
+        if moneda == "USD":
             total_crc = round(total_raw * tc, 2)
+        else:  # CRC
+            total_crc = round(total_raw, 2)
 
         # ========================================================
-        # IVA SOLO COSTA RICA
+        # IVA SOLO SI CLIENTE ES COSTA RICA
         # ========================================================
         if pais == "costa rica":
             subtotal = round(total_crc / 1.13, 2)
@@ -179,7 +179,7 @@ def sync_collections_to_accounting(conn):
         # LÍNEAS CONTABLES
         # ========================================================
 
-        # CxC
+        # 1) Cuentas por cobrar (TOTAL)
         cur.execute("""
             INSERT INTO accounting_lines
             (entry_id, account_code, account_name, debit, credit, line_description)
@@ -193,7 +193,7 @@ def sync_collections_to_accounting(conn):
             f"From Collections {numero}"
         ))
 
-        # Ingresos
+        # 2) Ingresos (SUBTOTAL)
         cur.execute("""
             INSERT INTO accounting_lines
             (entry_id, account_code, account_name, debit, credit, line_description)
@@ -207,7 +207,7 @@ def sync_collections_to_accounting(conn):
             f"From Collections {numero}"
         ))
 
-        # IVA por pagar
+        # 3) IVA por pagar (SI APLICA)
         if iva > 0:
             cur.execute("""
                 INSERT INTO accounting_lines

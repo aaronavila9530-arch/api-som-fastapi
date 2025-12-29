@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from psycopg2.extras import RealDictCursor
 from datetime import date, datetime
 import requests
+import xml.etree.ElementTree as ET
 
 from database import get_db
 
@@ -11,63 +12,66 @@ router = APIRouter(
 )
 
 # ============================================================
-# CONFIG BCCR (ÚNICO ENDPOINT VÁLIDO)
+# CONFIG BCCR — ÚNICO ENDPOINT VÁLIDO
 # ============================================================
 BCCR_URL = (
-    "https://centralenlinea.bccr.fi.cr/api/"
-    "Bccr.GE.CPF.CMEP.Exportar.API/"
-    "DatosPublicados/ObtengaDatosUltimoPeriodoPublicado"
+    "https://gee.bccr.fi.cr/Indicadores/Suscripciones/WS/"
+    "wsindicadoreseconomicos.asmx/ObtenerIndicadoresEconomicos"
 )
 
 BCCR_EMAIL = "aaron.avila@hotmail.es"
 BCCR_TOKEN = "S8L8LAT0VI"
+BCCR_NOMBRE = "MSL"
+
+# Indicadores
+INDICADOR_COMPRA = "317"
+INDICADOR_VENTA = "318"
 
 
 # ============================================================
-# HELPER: CONSULTA TC DESDE BCCR (CSV)
+# HELPER: CONSULTA TC VENTA DESDE BCCR (XML)
 # ============================================================
-def _fetch_tc_from_bccr() -> tuple[float, date]:
+def _fetch_tc_venta_from_bccr() -> tuple[float, date]:
     """
-    Consulta el tipo de cambio más reciente al BCCR (CSV)
+    Consulta el TC de VENTA (Indicador 318) del día actual
     Retorna: (rate, rate_date)
     """
 
+    today_str = date.today().strftime("%d/%m/%Y")
+
     params = {
-        "correo": BCCR_EMAIL,
-        "token": BCCR_TOKEN
+        "Indicador": INDICADOR_VENTA,
+        "FechaInicio": today_str,
+        "FechaFinal": today_str,
+        "Nombre": BCCR_NOMBRE,
+        "SubNiveles": "N",
+        "CorreoElectronico": BCCR_EMAIL,
+        "Token": BCCR_TOKEN
     }
 
-    r = requests.get(BCCR_URL, params=params, timeout=15)
+    r = requests.get(BCCR_URL, params=params, timeout=20)
     r.raise_for_status()
 
-    # CSV → líneas
-    lines = r.text.strip().splitlines()
-
-    if len(lines) < 2:
-        raise HTTPException(
-            status_code=500,
-            detail="Respuesta inválida del BCCR (CSV vacío)"
-        )
-
-    headers = lines[0].split(",")
-    values = lines[1].split(",")
-
-    data = dict(zip(headers, values))
-
     try:
-        rate = float(data["NUM_VALOR"])
-        # DES_FECHA viene como dd/mm/yyyy
-        rate_date = datetime.strptime(
-            data["DES_FECHA"],
-            "%d/%m/%Y"
-        ).date()
+        root = ET.fromstring(r.text)
+        ns = {"ns": "http://ws.sdde.bccr.fi.cr"}
+
+        value_node = root.find(".//ns:NUM_VALOR", ns)
+        date_node = root.find(".//ns:DES_FECHA", ns)
+
+        if value_node is None or date_node is None:
+            raise ValueError("NUM_VALOR o DES_FECHA no encontrados")
+
+        rate = float(value_node.text)
+        rate_date = datetime.fromisoformat(date_node.text).date()
+
+        return rate, rate_date
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Error parseando respuesta BCCR: {e}"
+            detail=f"Error parseando XML del BCCR: {e}"
         )
-
-    return rate, rate_date
 
 
 # ============================================================
@@ -76,14 +80,14 @@ def _fetch_tc_from_bccr() -> tuple[float, date]:
 @router.get("/today")
 def get_today_exchange_rate(conn=Depends(get_db)):
     """
-    Devuelve el TC del día.
-    Si ya existe en DB, NO consulta al BCCR.
+    Devuelve el TC del día (VENTA).
+    Si ya existe en BD, NO consulta al BCCR.
     """
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
     today = date.today()
 
-    # 1️⃣ Buscar si ya existe
+    # 1️⃣ Buscar en BD
     cur.execute("""
         SELECT rate, rate_date
         FROM exchange_rate
@@ -95,13 +99,14 @@ def get_today_exchange_rate(conn=Depends(get_db)):
     if row:
         return {
             "rate": float(row["rate"]),
-            "date": row["rate_date"].isoformat()
+            "date": row["rate_date"].isoformat(),
+            "source": "CACHE"
         }
 
     # 2️⃣ Consultar BCCR
-    rate, rate_date = _fetch_tc_from_bccr()
+    rate, rate_date = _fetch_tc_venta_from_bccr()
 
-    # 3️⃣ Guardar en DB
+    # 3️⃣ Guardar en BD
     cur.execute("""
         INSERT INTO exchange_rate (rate, rate_date, source)
         VALUES (%s, %s, 'BCCR')
@@ -112,7 +117,8 @@ def get_today_exchange_rate(conn=Depends(get_db)):
 
     return {
         "rate": rate,
-        "date": rate_date.isoformat()
+        "date": rate_date.isoformat(),
+        "source": "BCCR"
     }
 
 
@@ -143,5 +149,6 @@ def get_latest_exchange_rate(conn=Depends(get_db)):
 
     return {
         "rate": float(row["rate"]),
-        "date": row["rate_date"].isoformat()
+        "date": row["rate_date"].isoformat(),
+        "source": "BCCR"
     }

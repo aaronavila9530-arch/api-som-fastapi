@@ -517,7 +517,7 @@ def sync_cash_app_to_accounting(conn=Depends(get_db)):
             if monto <= 0:
                 continue
 
-            # TC por fecha
+            # TC POR FECHA
             cur.execute("""
                 SELECT rate FROM exchange_rate
                 WHERE rate_date = %s
@@ -543,7 +543,7 @@ def sync_cash_app_to_accounting(conn=Depends(get_db)):
                     "account_name": "Bancos",
                     "debit": banco_crc,
                     "credit": 0,
-                    "description": detail
+                    "line_description": detail
                 })
 
             if comision_crc > 0:
@@ -552,7 +552,7 @@ def sync_cash_app_to_accounting(conn=Depends(get_db)):
                     "account_name": "Comisiones bancarias",
                     "debit": comision_crc,
                     "credit": 0,
-                    "description": f"Comisión bancaria - {detail}"
+                    "line_description": f"Comisión bancaria - {detail}"
                 })
 
             lines.append({
@@ -560,13 +560,14 @@ def sync_cash_app_to_accounting(conn=Depends(get_db)):
                 "account_name": "Cuentas por cobrar",
                 "debit": 0,
                 "credit": monto_crc,
-                "description": detail
+                "line_description": detail
             })
 
-            total_d = round(sum(l["debit"] for l in lines), 2)
-            total_c = round(sum(l["credit"] for l in lines), 2)
-            if total_d != total_c:
-                raise Exception("Asiento descuadrado CASH_APP")
+            # VALIDACIÓN PARTIDA DOBLE
+            td = round(sum(l["debit"] for l in lines), 2)
+            tc_sum = round(sum(l["credit"] for l in lines), 2)
+            if td != tc_sum:
+                raise Exception("Asiento CASH_APP descuadrado")
 
             create_accounting_entry(
                 conn=conn,
@@ -584,6 +585,7 @@ def sync_cash_app_to_accounting(conn=Depends(get_db)):
                 creados += 1
 
         conn.commit()
+
         return {
             "status": "ok",
             "entries_created": creados,

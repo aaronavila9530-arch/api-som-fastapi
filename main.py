@@ -30,6 +30,7 @@ from routers.disputa import router as disputa_router
 from routers.invoice_to_pay import router as invoice_to_pay_router
 from routers.accounting import router as accounting_router
 from routers.exchange_rate import router as exchange_rate_router
+from routers import accounting_adjustments
 
 
 
@@ -124,6 +125,7 @@ app.include_router(disputa_router)
 app.include_router(invoice_to_pay_router)
 app.include_router(accounting_router)
 app.include_router(exchange_rate_router)
+app.include_router(accounting_adjustments.router)
 
 # ============================================================
 # EJECUCIÓN LOCAL

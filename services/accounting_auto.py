@@ -203,18 +203,37 @@ def sync_itp_to_accounting(conn):
     Sincroniza payment_obligations → accounting
 
     Reglas:
-    - TODOS los montos ya vienen en CRC
-    - NO se convierte moneda
-    - Genera asiento Gasto vs CxP (origin='ITP') siempre que no exista,
-      o corrige si ya existe pero está sin detalle o con monto incorrecto.
+    - Si currency = 'USD' => multiplica por TC del día
+    - Si currency = 'CRC' => NO hace ninguna conversión
+    - Genera asiento Gasto vs CxP (origin='ITP')
     - Si status='PAID' y balance=0 => genera asiento CxP vs Bancos (origin='ITP_PAYMENT')
-      o corrige si ya existe pero está sin detalle o con monto incorrecto.
     """
+
+    from psycopg2.extras import RealDictCursor
+    from datetime import date
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     # ============================================================
-    # 1) Traer obligaciones activas
+    # 0️⃣ OBTENER TC DEL DÍA (OBLIGATORIO)
+    # ============================================================
+    today = date.today()
+
+    cur.execute("""
+        SELECT rate
+        FROM exchange_rate
+        WHERE rate_date = %s
+        LIMIT 1
+    """, (today,))
+
+    tc_row = cur.fetchone()
+    if not tc_row:
+        raise Exception("Tipo de cambio del día no encontrado. No se puede contabilizar ITP.")
+
+    tc = float(tc_row["rate"])
+
+    # ============================================================
+    # 1️⃣ Traer obligaciones activas
     # ============================================================
     cur.execute("""
         SELECT
@@ -236,17 +255,25 @@ def sync_itp_to_accounting(conn):
     obligations = cur.fetchall()
 
     # ============================================================
-    # 2) Procesar una por una (SIN CONVERSIÓN)
+    # 2️⃣ Procesar una por una
     # ============================================================
     for ob in obligations:
         obligation_id = ob["id"]
         payee_name = (ob.get("payee_name") or "").strip() or "N/A"
+        currency = (ob.get("currency") or "").upper()
 
-        total = float(ob.get("total") or 0)
-        balance = float(ob.get("balance") or 0)
+        total_raw = float(ob.get("total") or 0)
+        balance_raw = float(ob.get("balance") or 0)
+
+        # 🔥 CONVERSIÓN CORRECTA
+        if currency == "USD":
+            total = round(total_raw * tc, 2)
+            balance = round(balance_raw * tc, 2)
+        else:  # CRC
+            total = total_raw
+            balance = balance_raw
 
         status = (ob.get("status") or "").upper()
-        reference = ob.get("reference")
 
         issue_date = ob.get("issue_date") or date.today()
         period = issue_date.strftime("%Y-%m")
@@ -267,7 +294,7 @@ def sync_itp_to_accounting(conn):
         bank_name = "Bancos"
 
         # ============================================================
-        # A) ASIENTO GASTO vs CxP (origin = 'ITP')
+        # A) ASIENTO GASTO vs CxP (origin='ITP')
         # ============================================================
         detail_text = f"From ITP {payee_name}"
 

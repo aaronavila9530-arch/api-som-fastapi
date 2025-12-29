@@ -204,7 +204,10 @@ def sync_itp_to_accounting(conn):
 
     Reglas:
     - Si currency = 'USD' => multiplica por TC del día
-    - Si currency = 'CRC' => NO hace ninguna conversión
+    - Si currency = 'CRC' => NO convierte
+    - Si payee_type = 'SUPPLIER' => el total incluye IVA (13%)
+      → divide entre 1.13 para gasto
+      → diferencia es IVA crédito fiscal
     - Genera asiento Gasto vs CxP (origin='ITP')
     - Si status='PAID' y balance=0 => genera asiento CxP vs Bancos (origin='ITP_PAYMENT')
     """
@@ -215,7 +218,7 @@ def sync_itp_to_accounting(conn):
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     # ============================================================
-    # 0️⃣ OBTENER TC DEL DÍA (OBLIGATORIO)
+    # 0️⃣ OBTENER TC DEL DÍA
     # ============================================================
     today = date.today()
 
@@ -239,8 +242,8 @@ def sync_itp_to_accounting(conn):
         SELECT
             p.id,
             p.payee_name,
+            p.payee_type,
             p.obligation_type,
-            p.reference,
             p.issue_date,
             p.last_payment_date,
             p.currency,
@@ -260,18 +263,31 @@ def sync_itp_to_accounting(conn):
     for ob in obligations:
         obligation_id = ob["id"]
         payee_name = (ob.get("payee_name") or "").strip() or "N/A"
+        payee_type = (ob.get("payee_type") or "").upper()
         currency = (ob.get("currency") or "").upper()
 
         total_raw = float(ob.get("total") or 0)
         balance_raw = float(ob.get("balance") or 0)
 
-        # 🔥 CONVERSIÓN CORRECTA
+        # -------------------------------
+        # Conversión por moneda
+        # -------------------------------
         if currency == "USD":
-            total = round(total_raw * tc, 2)
-            balance = round(balance_raw * tc, 2)
-        else:  # CRC
-            total = total_raw
-            balance = balance_raw
+            total_crc = round(total_raw * tc, 2)
+            balance_crc = round(balance_raw * tc, 2)
+        else:
+            total_crc = total_raw
+            balance_crc = balance_raw
+
+        # -------------------------------
+        # IVA SOLO PARA SUPPLIER
+        # -------------------------------
+        if payee_type == "SUPPLIER":
+            subtotal = round(total_crc / 1.13, 2)
+            iva = round(total_crc - subtotal, 2)
+        else:
+            subtotal = total_crc
+            iva = 0.0
 
         status = (ob.get("status") or "").upper()
 
@@ -290,11 +306,14 @@ def sync_itp_to_accounting(conn):
         ap_account = "2101"
         ap_name = "Cuentas por pagar"
 
+        iva_account = "1131"
+        iva_name = "IVA crédito fiscal"
+
         bank_account = "1102"
         bank_name = "Bancos"
 
         # ============================================================
-        # A) ASIENTO GASTO vs CxP (origin='ITP')
+        # A) ASIENTO GASTO vs CxP
         # ============================================================
         detail_text = f"From ITP {payee_name}"
 
@@ -315,18 +334,28 @@ def sync_itp_to_accounting(conn):
                 {
                     "account_code": expense_account,
                     "account_name": expense_name,
-                    "debit": total,
+                    "debit": subtotal,
                     "credit": 0,
-                    "line_description": detail_text
-                },
-                {
-                    "account_code": ap_account,
-                    "account_name": ap_name,
-                    "debit": 0,
-                    "credit": total,
                     "line_description": detail_text
                 }
             ]
+
+            if iva > 0:
+                lines.append({
+                    "account_code": iva_account,
+                    "account_name": iva_name,
+                    "debit": iva,
+                    "credit": 0,
+                    "line_description": detail_text
+                })
+
+            lines.append({
+                "account_code": ap_account,
+                "account_name": ap_name,
+                "debit": 0,
+                "credit": total_crc,
+                "line_description": detail_text
+            })
 
             create_accounting_entry(
                 conn=conn,
@@ -338,49 +367,10 @@ def sync_itp_to_accounting(conn):
                 lines=lines
             )
 
-        else:
-            cur.execute("""
-                SELECT id, account_code, debit, credit, COALESCE(line_description,'') AS line_description
-                FROM accounting_lines
-                WHERE entry_id = %s
-                ORDER BY id
-            """, (itp_entry_id,))
-            existing_lines = cur.fetchall()
-
-            current_debit = 0.0
-            for l in existing_lines:
-                if str(l["account_code"]) == str(expense_account):
-                    current_debit = float(l["debit"] or 0)
-                    break
-
-            needs_amount_fix = abs(round(current_debit, 2) - total) > 0.01
-
-            cur.execute("""
-                UPDATE accounting_lines
-                SET line_description = %s
-                WHERE entry_id = %s
-                  AND (line_description IS NULL OR BTRIM(line_description) = '')
-            """, (detail_text, itp_entry_id))
-
-            if needs_amount_fix:
-                cur.execute("""
-                    UPDATE accounting_lines
-                    SET debit = %s, credit = 0
-                    WHERE entry_id = %s
-                      AND account_code = %s
-                """, (total, itp_entry_id, expense_account))
-
-                cur.execute("""
-                    UPDATE accounting_lines
-                    SET debit = 0, credit = %s
-                    WHERE entry_id = %s
-                      AND account_code = %s
-                """, (total, itp_entry_id, ap_account))
-
         # ============================================================
-        # B) ASIENTO DE PAGO (origin='ITP_PAYMENT')
+        # B) ASIENTO DE PAGO
         # ============================================================
-        if status == "PAID" and balance == 0:
+        if status == "PAID" and balance_crc == 0:
             payment_date = ob.get("last_payment_date") or issue_date
             payment_period = payment_date.strftime("%Y-%m")
             payment_detail = f"From ITP Payment done to {payee_name}"
@@ -402,7 +392,7 @@ def sync_itp_to_accounting(conn):
                     {
                         "account_code": ap_account,
                         "account_name": ap_name,
-                        "debit": total,
+                        "debit": total_crc,
                         "credit": 0,
                         "line_description": payment_detail
                     },
@@ -410,7 +400,7 @@ def sync_itp_to_accounting(conn):
                         "account_code": bank_account,
                         "account_name": bank_name,
                         "debit": 0,
-                        "credit": total,
+                        "credit": total_crc,
                         "line_description": payment_detail
                     }
                 ]
@@ -424,44 +414,5 @@ def sync_itp_to_accounting(conn):
                     origin_id=obligation_id,
                     lines=pay_lines
                 )
-
-            else:
-                cur.execute("""
-                    SELECT id, account_code, debit, credit, COALESCE(line_description,'') AS line_description
-                    FROM accounting_lines
-                    WHERE entry_id = %s
-                    ORDER BY id
-                """, (pay_entry_id,))
-                existing_pay_lines = cur.fetchall()
-
-                current_debit_ap = 0.0
-                for l in existing_pay_lines:
-                    if str(l["account_code"]) == str(ap_account):
-                        current_debit_ap = float(l["debit"] or 0)
-                        break
-
-                needs_amount_fix = abs(round(current_debit_ap, 2) - total) > 0.01
-
-                cur.execute("""
-                    UPDATE accounting_lines
-                    SET line_description = %s
-                    WHERE entry_id = %s
-                      AND (line_description IS NULL OR BTRIM(line_description) = '')
-                """, (payment_detail, pay_entry_id))
-
-                if needs_amount_fix:
-                    cur.execute("""
-                        UPDATE accounting_lines
-                        SET debit = %s, credit = 0
-                        WHERE entry_id = %s
-                          AND account_code = %s
-                    """, (total, pay_entry_id, ap_account))
-
-                    cur.execute("""
-                        UPDATE accounting_lines
-                        SET debit = 0, credit = %s
-                        WHERE entry_id = %s
-                          AND account_code = %s
-                    """, (total, pay_entry_id, bank_account))
 
     conn.commit()

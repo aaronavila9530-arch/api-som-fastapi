@@ -68,6 +68,27 @@ def sync_collections_to_accounting(conn):
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
+    # ============================================================
+    # OBTENER TC DEL DÍA (OBLIGATORIO)
+    # ============================================================
+    today = date.today()
+
+    cur.execute("""
+        SELECT rate
+        FROM exchange_rate
+        WHERE rate_date = %s
+        LIMIT 1
+    """, (today,))
+
+    row_tc = cur.fetchone()
+    if not row_tc:
+        raise Exception("Tipo de cambio del día no encontrado. No se puede contabilizar Collections.")
+
+    tc = float(row_tc["rate"])
+
+    # ============================================================
+    # COLLECTIONS SIN ASIENTO
+    # ============================================================
     cur.execute("""
         SELECT c.*
         FROM collections c
@@ -84,9 +105,16 @@ def sync_collections_to_accounting(conn):
     for c in rows:
 
         numero = c["numero_documento"]
+
+        # ------------------------------
+        # MONTO ORIGINAL
+        # ------------------------------
         total = float(c["total"] or 0)
         if total <= 0:
             continue
+
+        # 🔥 APLICAR TC
+        total = round(total * tc, 2)
 
         fecha = c["fecha_emision"] or date.today()
         period = fecha.strftime("%Y-%m")
@@ -100,6 +128,7 @@ def sync_collections_to_accounting(conn):
             WHERE factura = %s
             LIMIT 1
         """, (numero,))
+
         srv = cur.fetchone()
         pais = (srv["pais"] if srv else "").lower()
 
@@ -174,8 +203,8 @@ def sync_itp_to_accounting(conn):
     Sincroniza payment_obligations → accounting
 
     Reglas:
-    - Si currency = 'CRC' => convierte a USD dividiendo entre 500.
-    - Si currency = 'USD' => no convierte.
+    - TODOS los montos ya vienen en CRC
+    - NO se convierte moneda
     - Genera asiento Gasto vs CxP (origin='ITP') siempre que no exista,
       o corrige si ya existe pero está sin detalle o con monto incorrecto.
     - Si status='PAID' y balance=0 => genera asiento CxP vs Bancos (origin='ITP_PAYMENT')
@@ -185,8 +214,7 @@ def sync_itp_to_accounting(conn):
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     # ============================================================
-    # 1) Traer obligaciones activas (no solo "sin asiento")
-    #    porque necesitamos CORREGIR las ya creadas.
+    # 1) Traer obligaciones activas
     # ============================================================
     cur.execute("""
         SELECT
@@ -207,26 +235,15 @@ def sync_itp_to_accounting(conn):
     """)
     obligations = cur.fetchall()
 
-    # Helper para convertir CRC→USD
-    def _to_usd(amount: float, currency: str) -> float:
-        amount = float(amount or 0)
-        if (currency or "").upper() == "CRC":
-            return round(amount / 500.0, 2)
-        return round(amount, 2)
-
     # ============================================================
-    # 2) Procesar una por una
+    # 2) Procesar una por una (SIN CONVERSIÓN)
     # ============================================================
     for ob in obligations:
         obligation_id = ob["id"]
         payee_name = (ob.get("payee_name") or "").strip() or "N/A"
-        currency = (ob.get("currency") or "").upper()
 
-        total_raw = float(ob.get("total") or 0)
-        balance_raw = float(ob.get("balance") or 0)
-
-        total = _to_usd(total_raw, currency)
-        balance = _to_usd(balance_raw, currency)
+        total = float(ob.get("total") or 0)
+        balance = float(ob.get("balance") or 0)
 
         status = (ob.get("status") or "").upper()
         reference = ob.get("reference")
@@ -235,7 +252,7 @@ def sync_itp_to_accounting(conn):
         period = issue_date.strftime("%Y-%m")
 
         # ------------------------------------------------------------
-        # Cuentas (según tu lógica actual)
+        # Cuentas
         # ------------------------------------------------------------
         expense_account = "5101"
         expense_name = "Gastos de servicios"
@@ -254,7 +271,6 @@ def sync_itp_to_accounting(conn):
         # ============================================================
         detail_text = f"From ITP {payee_name}"
 
-        # ¿Existe ya el asiento ITP para esta obligación?
         cur.execute("""
             SELECT id
             FROM accounting_entries
@@ -266,7 +282,6 @@ def sync_itp_to_accounting(conn):
         itp_entry_id = row_itp["id"] if row_itp else None
 
         if not itp_entry_id:
-            # Crear
             from services.accounting_auto import create_accounting_entry
 
             lines = [
@@ -297,8 +312,6 @@ def sync_itp_to_accounting(conn):
             )
 
         else:
-            # Corregir detalle vacío y/o monto incorrecto
-            # Traer líneas actuales
             cur.execute("""
                 SELECT id, account_code, debit, credit, COALESCE(line_description,'') AS line_description
                 FROM accounting_lines
@@ -307,7 +320,6 @@ def sync_itp_to_accounting(conn):
             """, (itp_entry_id,))
             existing_lines = cur.fetchall()
 
-            # Detectar si requiere ajuste por monto: buscamos la línea del gasto
             current_debit = 0.0
             for l in existing_lines:
                 if str(l["account_code"]) == str(expense_account):
@@ -316,7 +328,6 @@ def sync_itp_to_accounting(conn):
 
             needs_amount_fix = abs(round(current_debit, 2) - total) > 0.01
 
-            # 1) detalle: si está vacío en alguna línea, lo seteamos
             cur.execute("""
                 UPDATE accounting_lines
                 SET line_description = %s
@@ -324,7 +335,6 @@ def sync_itp_to_accounting(conn):
                   AND (line_description IS NULL OR BTRIM(line_description) = '')
             """, (detail_text, itp_entry_id))
 
-            # 2) monto: si no coincide, forzamos valores correctos en las 2 cuentas
             if needs_amount_fix:
                 cur.execute("""
                     UPDATE accounting_lines
@@ -341,7 +351,7 @@ def sync_itp_to_accounting(conn):
                 """, (total, itp_entry_id, ap_account))
 
         # ============================================================
-        # B) SI ESTÁ PAGADA → ASIENTO CxP vs Bancos (origin='ITP_PAYMENT')
+        # B) ASIENTO DE PAGO (origin='ITP_PAYMENT')
         # ============================================================
         if status == "PAID" and balance == 0:
             payment_date = ob.get("last_payment_date") or issue_date
@@ -389,7 +399,6 @@ def sync_itp_to_accounting(conn):
                 )
 
             else:
-                # Corregir detalle y/o monto
                 cur.execute("""
                     SELECT id, account_code, debit, credit, COALESCE(line_description,'') AS line_description
                     FROM accounting_lines

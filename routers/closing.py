@@ -84,40 +84,22 @@ def close_period(payload: dict, conn=Depends(get_db)):
     }
 
 
-# ============================================================
-# POST /closing/gl/preview
-# Preview del cierre de Libro Mayor (NO postea)
-# ============================================================
-
 @router.post("/gl/preview")
 def preview_gl_closing(payload: Dict[str, Any], conn=Depends(get_db)):
-    """
-    Preview del cierre de Libro Mayor.
-
-    Payload esperado:
-    {
-        company_code: "MSL-CR",
-        fiscal_year: 2025,
-        period: 12,
-        ledger: "0L"
-    }
-    """
-
     required_fields = ["company_code", "fiscal_year", "period"]
 
     for f in required_fields:
         if f not in payload:
             raise HTTPException(400, f"Missing field: {f}")
 
-    company = payload["company_code"]
+    company = payload["company_code"]  # se mantiene por consistencia ERP
     fiscal_year = payload["fiscal_year"]
     period = payload["period"]
-    ledger = payload.get("ledger", "0L")
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     # --------------------------------------------------------
-    # 1️⃣ Validar que el período esté cerrado
+    # 1️⃣ Validar período cerrado
     # --------------------------------------------------------
     cur.execute("""
         SELECT period_closed
@@ -125,19 +107,18 @@ def preview_gl_closing(payload: Dict[str, Any], conn=Depends(get_db)):
         WHERE company_code = %s
           AND fiscal_year = %s
           AND period = %s
-          AND ledger = %s
-    """, (company, fiscal_year, period, ledger))
+    """, (company, fiscal_year, period))
 
     status = cur.fetchone()
 
     if not status or not status["period_closed"]:
         raise HTTPException(
             400,
-            "El período no está cerrado. No se puede generar preview de cierre."
+            "El período no está cerrado. No se puede generar preview."
         )
 
     # --------------------------------------------------------
-    # 2️⃣ Agrupar Libro Mayor por cuenta
+    # 2️⃣ GL Preview desde accounting_ledger
     # --------------------------------------------------------
     cur.execute("""
         SELECT
@@ -147,40 +128,47 @@ def preview_gl_closing(payload: Dict[str, Any], conn=Depends(get_db)):
             SUM(credit) AS credit,
             SUM(debit - credit) AS balance
         FROM accounting_ledger
-        WHERE company_code = %s
-          AND fiscal_year = %s
+        WHERE fiscal_year = %s
           AND period <= %s
-          AND ledger = %s
+          AND active = TRUE
         GROUP BY account_code, account_name
         ORDER BY account_code
-    """, (company, fiscal_year, period, ledger))
+    """, (fiscal_year, period))
 
-    rows = cur.fetchall()
+    rows = cur.fetchall() or []
 
+    # --------------------------------------------------------
+    # 3️⃣ Respuesta segura (aunque esté vacío)
+    # --------------------------------------------------------
     if not rows:
-        raise HTTPException(404, "No existen movimientos contables para el período.")
+        return {
+            "company_code": company,
+            "fiscal_year": fiscal_year,
+            "period": period,
+            "totals": {
+                "debit": 0.0,
+                "credit": 0.0,
+                "difference": 0.0
+            },
+            "is_balanced": True,
+            "data": [],
+            "message": "No existen movimientos contables para el período."
+        }
 
-    # --------------------------------------------------------
-    # 3️⃣ Totales y validación Debe = Haber
-    # --------------------------------------------------------
     total_debit = sum(r["debit"] for r in rows)
     total_credit = sum(r["credit"] for r in rows)
     diff = round(total_debit - total_credit, 2)
 
-    response = {
+    return {
         "company_code": company,
         "fiscal_year": fiscal_year,
         "period": period,
-        "ledger": ledger,
-
         "totals": {
             "debit": float(total_debit),
             "credit": float(total_credit),
             "difference": float(diff)
         },
-
         "is_balanced": diff == 0,
-
         "data": [
             {
                 "account_code": r["account_code"],
@@ -192,8 +180,6 @@ def preview_gl_closing(payload: Dict[str, Any], conn=Depends(get_db)):
             for r in rows
         ]
     }
-
-    return response
 
 
 

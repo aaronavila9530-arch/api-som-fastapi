@@ -74,130 +74,72 @@ def create_manual_entry(payload: dict, conn=Depends(get_db)):
 def reverse_entry(entry_id: int, conn=Depends(get_db)):
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    # ============================================================
-    # 1️⃣ Validar asiento origen (maneja reversed NULL)
-    # ============================================================
-    cur.execute(
-        """
+    # 1️⃣ Validar asiento original
+    cur.execute("""
         SELECT *
         FROM accounting_entries
         WHERE id = %s
           AND COALESCE(reversed, FALSE) = FALSE
-        """,
-        (entry_id,)
-    )
+    """, (entry_id,))
     entry = cur.fetchone()
 
     if not entry:
         raise HTTPException(
-            status_code=404,
-            detail="Asiento no encontrado o ya fue revertido"
+            status_code=400,
+            detail="El asiento no existe o ya fue revertido"
         )
 
-    # ============================================================
-    # 2️⃣ Obtener líneas del asiento original
-    # ============================================================
-    cur.execute(
-        """
+    # 2️⃣ Traer líneas originales
+    cur.execute("""
         SELECT *
         FROM accounting_lines
         WHERE entry_id = %s
-        ORDER BY id
-        """,
-        (entry_id,)
-    )
+    """, (entry_id,))
     lines = cur.fetchall()
 
     if not lines:
-        raise HTTPException(
-            status_code=400,
-            detail="El asiento no tiene líneas contables"
-        )
+        raise HTTPException(400, "El asiento no tiene líneas")
 
-    # ============================================================
-    # 3️⃣ Crear asiento de reversa (cabecera)
-    # ============================================================
-    cur.execute(
-        """
+    # 3️⃣ Crear asiento de reverso (NO marcado como reversed)
+    cur.execute("""
         INSERT INTO accounting_entries
-        (
-            entry_date,
-            period,
-            description,
-            origin,
-            origin_id,
-            reversed
-        )
-        VALUES
-        (
-            CURRENT_DATE,
-            %s,
-            %s,
-            'REVERSAL',
-            %s,
-            TRUE
-        )
+        (entry_date, period, description, origin, origin_id, reversed)
+        VALUES (CURRENT_DATE, %s, %s, 'REVERSAL', %s, FALSE)
         RETURNING id
-        """,
-        (
-            entry["period"],
-            f"Asiento de reversa del asiento {entry_id}",
-            entry_id
-        )
-    )
-
+    """, (
+        entry["period"],
+        f"Asiento de reversa del asiento {entry_id}",
+        entry_id
+    ))
     reversal_id = cur.fetchone()["id"]
 
-    # ============================================================
-    # 4️⃣ Crear líneas invertidas (Debe ↔ Haber)
-    # ============================================================
+    # 4️⃣ Insertar líneas INVERTIDAS
     for l in lines:
-        cur.execute(
-            """
+        cur.execute("""
             INSERT INTO accounting_lines
-            (
-                entry_id,
-                account_code,
-                account_name,
-                debit,
-                credit,
-                line_description
-            )
-            VALUES
-            (%s, %s, %s, %s, %s, %s)
-            """,
-            (
-                reversal_id,
-                l["account_code"],
-                l["account_name"],
-                l["credit"] or 0,
-                l["debit"] or 0,
-                f"Reversa de línea {l['id']} (asiento {entry_id})"
-            )
-        )
+            (entry_id, account_code, account_name, debit, credit, line_description)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (
+            reversal_id,
+            l["account_code"],
+            l["account_name"],
+            l["credit"],   # 👈 INVERTIDO
+            l["debit"],    # 👈 INVERTIDO
+            f"Reverso de línea {l['id']}"
+        ))
 
-    # ============================================================
-    # 5️⃣ Marcar asiento original como revertido
-    # ============================================================
-    cur.execute(
-        """
+    # 5️⃣ Marcar SOLO el original como revertido
+    cur.execute("""
         UPDATE accounting_entries
-        SET
-            reversed = TRUE,
+        SET reversed = TRUE,
             reversal_entry_id = %s
         WHERE id = %s
-        """,
-        (reversal_id, entry_id)
-    )
+    """, (reversal_id, entry_id))
 
     conn.commit()
 
-    # ============================================================
-    # 6️⃣ Respuesta (frontend refresca con <<ReloadAccounting>>)
-    # ============================================================
     return {
-        "status": "reversed",
-        "message": f"Asiento {entry_id} revertido correctamente",
+        "status": "ok",
         "original_entry_id": entry_id,
         "reversal_entry_id": reversal_id
     }

@@ -92,33 +92,39 @@ def preview_gl_closing(payload: Dict[str, Any], conn=Depends(get_db)):
         if f not in payload:
             raise HTTPException(400, f"Missing field: {f}")
 
-    company = payload["company_code"]  # consistencia ERP
+    company = payload["company_code"]
     fiscal_year = payload["fiscal_year"]
     period = payload["period"]
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     # --------------------------------------------------------
-    # 1️⃣ Validar período cerrado
+    # 1️⃣ Validar período cerrado (FUENTE OFICIAL: closing_status)
     # --------------------------------------------------------
     cur.execute("""
-        SELECT period_closed
+        SELECT
+            company_code,
+            fiscal_year,
+            period
         FROM closing_status
         WHERE company_code = %s
           AND fiscal_year = %s
           AND period = %s
+          AND period_closed = TRUE
     """, (company, fiscal_year, period))
 
-    status = cur.fetchone()
+    closing = cur.fetchone()
 
-    if not status or not status["period_closed"]:
+    if not closing:
         raise HTTPException(
             400,
             "El período no está cerrado. No se puede generar preview."
         )
 
     # --------------------------------------------------------
-    # 2️⃣ GL Preview (CORREGIDO: leer accounting_lines)
+    # 2️⃣ GL Preview (FUENTE CONTABLE REAL)
+    # accounting_entries → contexto fiscal
+    # accounting_lines   → detalle contable
     # --------------------------------------------------------
     cur.execute("""
         SELECT
@@ -129,16 +135,17 @@ def preview_gl_closing(payload: Dict[str, Any], conn=Depends(get_db)):
             SUM(l.debit - l.credit) AS balance
         FROM accounting_lines l
         JOIN accounting_entries e ON e.id = l.entry_id
-        WHERE e.fiscal_year = %s
+        WHERE e.company_code = %s
+          AND e.fiscal_year = %s
           AND e.period <= %s
         GROUP BY l.account_code, l.account_name
         ORDER BY l.account_code
-    """, (fiscal_year, period))
+    """, (company, fiscal_year, period))
 
     rows = cur.fetchall() or []
 
     # --------------------------------------------------------
-    # 3️⃣ Respuesta segura (aunque esté vacío)
+    # 3️⃣ Respuesta segura
     # --------------------------------------------------------
     if not rows:
         return {

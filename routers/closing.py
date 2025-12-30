@@ -24,6 +24,7 @@ def close_period(payload: dict, conn=Depends(get_db)):
     cur.execute("""
         UPDATE closing_status
         SET period_closed = TRUE,
+            closed_by = %s,
             updated_at = NOW()
         WHERE company_code = %s
           AND fiscal_year = %s
@@ -31,6 +32,7 @@ def close_period(payload: dict, conn=Depends(get_db)):
           AND ledger = %s
         RETURNING id
     """, (
+        payload["closed_by"],
         payload["company_code"],
         payload["fiscal_year"],
         payload["period"],
@@ -48,20 +50,38 @@ def close_period(payload: dict, conn=Depends(get_db)):
                 period,
                 ledger,
                 period_closed,
+                gl_closed,
+                tb_closed,
+                pnl_closed,
+                equity_closed,
+                fs_closed,
+                fy_opened,
+                closed_by,
                 created_at,
                 updated_at
             )
-            VALUES (%s, %s, %s, %s, TRUE, NOW(), NOW())
+            VALUES (
+                %s, %s, %s, %s,
+                TRUE,
+                FALSE, FALSE, FALSE, FALSE, FALSE, FALSE,
+                %s,
+                NOW(), NOW()
+            )
             RETURNING id
         """, (
             payload["company_code"],
             payload["fiscal_year"],
             payload["period"],
-            payload["ledger"]
+            payload["ledger"],
+            payload["closed_by"]
         ))
 
     conn.commit()
-    return {"status": "ok", "message": "Periodo cerrado"}
+
+    return {
+        "status": "ok",
+        "message": "Periodo cerrado correctamente"
+    }
 
 
 # ============================================================

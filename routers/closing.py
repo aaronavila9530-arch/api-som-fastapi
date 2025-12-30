@@ -248,22 +248,24 @@ def post_gl_closing(payload: dict, conn=Depends(get_db)):
             )
 
         # ----------------------------------------------------
-        # 2️⃣ Recalcular preview (fuente única de verdad)
+        # 2️⃣ Recalcular GL (FUENTE ÚNICA: accounting_lines)
         # ----------------------------------------------------
         cur.execute("""
             SELECT
-                account_code,
-                account_name,
-                SUM(debit)  AS debit,
-                SUM(credit) AS credit,
-                SUM(debit - credit) AS balance
-            FROM accounting_ledger
-            WHERE company_code = %s
-              AND fiscal_year = %s
-              AND period <= %s
-              AND ledger = %s
-            GROUP BY account_code, account_name
-            ORDER BY account_code
+                l.account_code,
+                l.account_name,
+                SUM(l.debit)  AS debit,
+                SUM(l.credit) AS credit,
+                SUM(l.debit - l.credit) AS balance
+            FROM accounting_lines l
+            JOIN closing_status cs
+              ON cs.company_code = %s
+             AND cs.fiscal_year = %s
+             AND cs.period = %s
+             AND cs.ledger = %s
+            WHERE l.created_at <= cs.updated_at
+            GROUP BY l.account_code, l.account_name
+            ORDER BY l.account_code
         """, (company, fiscal_year, period, ledger))
 
         rows = cur.fetchall()
@@ -337,7 +339,7 @@ def post_gl_closing(payload: dict, conn=Depends(get_db)):
                 r["debit"],
                 r["credit"],
                 r["balance"],
-                "CRC"   # o moneda sociedad si ya la tienes parametrizada
+                "CRC"
             ))
 
         # ----------------------------------------------------
@@ -370,6 +372,7 @@ def post_gl_closing(payload: dict, conn=Depends(get_db)):
     except Exception as e:
         conn.rollback()
         raise HTTPException(500, f"Error posteando cierre de Libro Mayor: {e}")
+
 
 
 # ============================================================

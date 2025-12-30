@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from psycopg2.extras import RealDictCursor
 from typing import List, Dict, Any
-from datetime import datetime
+from datetime import date, datetime
 from calendar import monthrange
 from typing import Dict
 

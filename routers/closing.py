@@ -3,6 +3,7 @@ from psycopg2.extras import RealDictCursor
 from typing import List, Dict, Any
 from datetime import date
 from calendar import monthrange
+from typing import Dict
 
 from database import get_db
 
@@ -191,19 +192,7 @@ def preview_gl_closing(payload: Dict[str, Any], conn=Depends(get_db)):
 # ============================================================
 
 @router.post("/gl/post")
-def post_gl_closing(payload: dict, conn=Depends(get_db)):
-    """
-    Posteo del cierre de Libro Mayor.
-
-    Payload esperado:
-    {
-        company_code: "MSL-CR",
-        fiscal_year: 2025,
-        period: 12,
-        ledger: "0L",
-        posted_by: "aaron.avila"
-    }
-    """
+def post_gl_closing(payload: Dict, conn=Depends(get_db)):
 
     required_fields = ["company_code", "fiscal_year", "period", "posted_by"]
 
@@ -212,10 +201,10 @@ def post_gl_closing(payload: dict, conn=Depends(get_db)):
             raise HTTPException(400, f"Missing field: {f}")
 
     company = payload["company_code"]
-    fiscal_year = payload["fiscal_year"]
-    period = payload["period"]
-    ledger = payload.get("ledger", "0L")
+    fiscal_year = int(payload["fiscal_year"])
+    period = int(payload["period"])
     posted_by = payload["posted_by"]
+    ledger = payload.get("ledger", "0L")
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -235,20 +224,19 @@ def post_gl_closing(payload: dict, conn=Depends(get_db)):
 
         status = cur.fetchone()
 
-        if not status or not status["period_closed"]:
-            raise HTTPException(
-                400,
-                "El período no está cerrado. No se puede postear el cierre de Libro Mayor."
-            )
+        if not status:
+            raise HTTPException(404, "Estado de cierre no encontrado.")
+
+        if not status["period_closed"]:
+            raise HTTPException(400, "El período no está cerrado.")
 
         if status["gl_closed"]:
-            raise HTTPException(
-                409,
-                "El cierre de Libro Mayor ya fue posteado para este período."
-            )
+            raise HTTPException(409, "El GL ya fue cerrado para este período.")
+
+        cutoff_ts = status["updated_at"]  # 🔒 corte contable oficial
 
         # ----------------------------------------------------
-        # 2️⃣ Recalcular GL (FUENTE ÚNICA: accounting_lines)
+        # 2️⃣ GL Snapshot (MISMA LÓGICA QUE PREVIEW)
         # ----------------------------------------------------
         cur.execute("""
             SELECT
@@ -258,29 +246,21 @@ def post_gl_closing(payload: dict, conn=Depends(get_db)):
                 SUM(l.credit) AS credit,
                 SUM(l.debit - l.credit) AS balance
             FROM accounting_lines l
-            JOIN closing_status cs
-              ON cs.company_code = %s
-             AND cs.fiscal_year = %s
-             AND cs.period = %s
-             AND cs.ledger = %s
-            WHERE l.created_at <= cs.updated_at
+            WHERE l.created_at <= %s
             GROUP BY l.account_code, l.account_name
             ORDER BY l.account_code
-        """, (company, fiscal_year, period, ledger))
+        """, (cutoff_ts,))
 
         rows = cur.fetchall()
 
         if not rows:
-            raise HTTPException(404, "No existen movimientos contables para postear.")
+            raise HTTPException(404, "No hay movimientos contables para cerrar.")
 
-        total_debit = sum(r["debit"] for r in rows)
-        total_credit = sum(r["credit"] for r in rows)
+        total_debit = sum(r["debit"] or 0 for r in rows)
+        total_credit = sum(r["credit"] or 0 for r in rows)
 
         if round(total_debit - total_credit, 2) != 0:
-            raise HTTPException(
-                400,
-                "El Libro Mayor no cuadra. No se puede postear el cierre."
-            )
+            raise HTTPException(400, "El Libro Mayor no cuadra.")
 
         # ----------------------------------------------------
         # 3️⃣ Crear batch GL_CLOSING
@@ -300,8 +280,8 @@ def post_gl_closing(payload: dict, conn=Depends(get_db)):
                 posted_at,
                 posted_by
             )
-            VALUES (%s, 'GL_CLOSING', %s, %s, %s, %s, 'POSTED',
-                    %s, NOW(), %s)
+            VALUES (%s, 'GL_CLOSING', %s, %s, %s, %s,
+                    'POSTED', %s, NOW(), %s)
             RETURNING id
         """, (
             batch_code,
@@ -309,14 +289,14 @@ def post_gl_closing(payload: dict, conn=Depends(get_db)):
             fiscal_year,
             period,
             ledger,
-            f"Cierre de Libro Mayor {fiscal_year}-{period:02d}",
+            f"Cierre Libro Mayor {fiscal_year}-{period:02d}",
             posted_by
         ))
 
         batch_id = cur.fetchone()["id"]
 
         # ----------------------------------------------------
-        # 4️⃣ Insertar líneas del batch (snapshot por cuenta)
+        # 4️⃣ Insertar snapshot por cuenta
         # ----------------------------------------------------
         for r in rows:
             cur.execute("""
@@ -336,14 +316,14 @@ def post_gl_closing(payload: dict, conn=Depends(get_db)):
                 batch_id,
                 r["account_code"],
                 r["account_name"],
-                r["debit"],
-                r["credit"],
-                r["balance"],
+                r["debit"] or 0,
+                r["credit"] or 0,
+                r["balance"] or 0,
                 "CRC"
             ))
 
         # ----------------------------------------------------
-        # 5️⃣ Actualizar closing_status
+        # 5️⃣ Marcar GL como cerrado
         # ----------------------------------------------------
         cur.execute("""
             UPDATE closing_status
@@ -371,8 +351,10 @@ def post_gl_closing(payload: dict, conn=Depends(get_db)):
 
     except Exception as e:
         conn.rollback()
-        raise HTTPException(500, f"Error posteando cierre de Libro Mayor: {e}")
-
+        raise HTTPException(
+            500,
+            f"Error posteando GL: {e}"
+        )
 
 
 # ============================================================

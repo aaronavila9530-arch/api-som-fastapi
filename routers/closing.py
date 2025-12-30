@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from psycopg2.extras import RealDictCursor
 from typing import List, Dict, Any
-from datetime import date
+from datetime import datetime
 from calendar import monthrange
 from typing import Dict
 
@@ -224,19 +224,14 @@ def post_gl_closing(payload: Dict, conn=Depends(get_db)):
 
         status = cur.fetchone()
 
-        if not status:
-            raise HTTPException(404, "Estado de cierre no encontrado.")
-
-        if not status["period_closed"]:
+        if not status or not status["period_closed"]:
             raise HTTPException(400, "El período no está cerrado.")
 
         if status["gl_closed"]:
             raise HTTPException(409, "El GL ya fue cerrado para este período.")
 
-        cutoff_ts = status["updated_at"]  # 🔒 corte contable oficial
-
         # ----------------------------------------------------
-        # 2️⃣ GL Snapshot (MISMA LÓGICA QUE PREVIEW)
+        # 2️⃣ GL Snapshot (misma lógica que preview)
         # ----------------------------------------------------
         cur.execute("""
             SELECT
@@ -246,10 +241,17 @@ def post_gl_closing(payload: Dict, conn=Depends(get_db)):
                 SUM(l.credit) AS credit,
                 SUM(l.debit - l.credit) AS balance
             FROM accounting_lines l
-            WHERE l.created_at <= %s
+            WHERE l.created_at::date <= (
+                SELECT updated_at::date
+                FROM closing_status
+                WHERE company_code = %s
+                  AND fiscal_year = %s
+                  AND period = %s
+                  AND ledger = %s
+            )
             GROUP BY l.account_code, l.account_name
             ORDER BY l.account_code
-        """, (cutoff_ts,))
+        """, (company, fiscal_year, period, ledger))
 
         rows = cur.fetchall()
 
@@ -280,8 +282,8 @@ def post_gl_closing(payload: Dict, conn=Depends(get_db)):
                 posted_at,
                 posted_by
             )
-            VALUES (%s, 'GL_CLOSING', %s, %s, %s, %s,
-                    'POSTED', %s, NOW(), %s)
+            VALUES (%s, 'GL_CLOSING', %s, %s, %s, %s, 'POSTED',
+                    %s, NOW(), %s)
             RETURNING id
         """, (
             batch_code,
@@ -296,7 +298,7 @@ def post_gl_closing(payload: Dict, conn=Depends(get_db)):
         batch_id = cur.fetchone()["id"]
 
         # ----------------------------------------------------
-        # 4️⃣ Insertar snapshot por cuenta
+        # 4️⃣ Insertar líneas del batch
         # ----------------------------------------------------
         for r in rows:
             cur.execute("""
@@ -311,15 +313,14 @@ def post_gl_closing(payload: Dict, conn=Depends(get_db)):
                     source_type,
                     source_reference
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, 'GL', NULL)
+                VALUES (%s, %s, %s, %s, %s, %s, 'CRC', 'GL', NULL)
             """, (
                 batch_id,
                 r["account_code"],
                 r["account_name"],
                 r["debit"] or 0,
                 r["credit"] or 0,
-                r["balance"] or 0,
-                "CRC"
+                r["balance"] or 0
             ))
 
         # ----------------------------------------------------
@@ -351,10 +352,7 @@ def post_gl_closing(payload: Dict, conn=Depends(get_db)):
 
     except Exception as e:
         conn.rollback()
-        raise HTTPException(
-            500,
-            f"Error posteando GL: {e}"
-        )
+        raise HTTPException(500, f"Error posteando GL: {e}")
 
 
 # ============================================================

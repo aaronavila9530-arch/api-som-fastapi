@@ -118,21 +118,21 @@ def preview_gl_closing(payload: Dict[str, Any], conn=Depends(get_db)):
         )
 
     # --------------------------------------------------------
-    # 2️⃣ GL Preview desde accounting_ledger
+    # 2️⃣ GL Preview (CORREGIDO: leer accounting_lines)
     # --------------------------------------------------------
     cur.execute("""
         SELECT
-            account_code,
-            account_name,
-            SUM(debit)  AS debit,
-            SUM(credit) AS credit,
-            SUM(debit - credit) AS balance
-        FROM accounting_ledger
-        WHERE fiscal_year = %s
-          AND CAST(period AS INTEGER) <= %s
-          AND active = TRUE
-        GROUP BY account_code, account_name
-        ORDER BY account_code
+            l.account_code,
+            l.account_name,
+            SUM(l.debit)  AS debit,
+            SUM(l.credit) AS credit,
+            SUM(l.debit - l.credit) AS balance
+        FROM accounting_lines l
+        JOIN accounting_entries e ON e.id = l.entry_id
+        WHERE e.fiscal_year = %s
+          AND e.period <= %s
+        GROUP BY l.account_code, l.account_name
+        ORDER BY l.account_code
     """, (fiscal_year, period))
 
     rows = cur.fetchall() or []
@@ -180,11 +180,6 @@ def preview_gl_closing(payload: Dict[str, Any], conn=Depends(get_db)):
             for r in rows
         ]
     }
-
-
-
-
-
 
 # ============================================================
 # POST /closing/gl/post

@@ -20,6 +20,7 @@ def close_period(payload: dict, conn=Depends(get_db)):
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
+    # 1️⃣ Intentar cerrar si existe
     cur.execute("""
         UPDATE closing_status
         SET period_closed = TRUE,
@@ -37,8 +38,27 @@ def close_period(payload: dict, conn=Depends(get_db)):
     ))
 
     row = cur.fetchone()
+
+    # 2️⃣ Si no existe, crearlo y cerrarlo
     if not row:
-        raise HTTPException(404, "Periodo no encontrado")
+        cur.execute("""
+            INSERT INTO closing_status (
+                company_code,
+                fiscal_year,
+                period,
+                ledger,
+                period_closed,
+                created_at,
+                updated_at
+            )
+            VALUES (%s, %s, %s, %s, TRUE, NOW(), NOW())
+            RETURNING id
+        """, (
+            payload["company_code"],
+            payload["fiscal_year"],
+            payload["period"],
+            payload["ledger"]
+        ))
 
     conn.commit()
     return {"status": "ok", "message": "Periodo cerrado"}

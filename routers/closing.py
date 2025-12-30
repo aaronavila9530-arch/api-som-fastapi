@@ -92,7 +92,7 @@ def preview_gl_closing(payload: Dict[str, Any], conn=Depends(get_db)):
         if f not in payload:
             raise HTTPException(400, f"Missing field: {f}")
 
-    company = payload["company_code"]  # se mantiene por consistencia ERP
+    company = payload["company_code"]  # consistencia ERP
     fiscal_year = payload["fiscal_year"]
     period = payload["period"]
 
@@ -129,7 +129,7 @@ def preview_gl_closing(payload: Dict[str, Any], conn=Depends(get_db)):
             SUM(debit - credit) AS balance
         FROM accounting_ledger
         WHERE fiscal_year = %s
-          AND period <= %s
+          AND CAST(period AS INTEGER) <= %s
           AND active = TRUE
         GROUP BY account_code, account_name
         ORDER BY account_code

@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException
 from psycopg2.extras import RealDictCursor
 from typing import List, Dict, Any
-from datetime import datetime
+from datetime import date
+from calendar import monthrange
 
 from database import get_db
 
@@ -93,19 +94,16 @@ def preview_gl_closing(payload: Dict[str, Any], conn=Depends(get_db)):
             raise HTTPException(400, f"Missing field: {f}")
 
     company = payload["company_code"]
-    fiscal_year = payload["fiscal_year"]
-    period = payload["period"]
+    fiscal_year = int(payload["fiscal_year"])
+    period = int(payload["period"])
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     # --------------------------------------------------------
-    # 1️⃣ Validar período cerrado (FUENTE OFICIAL: closing_status)
+    # 1️⃣ Validar período cerrado (closing_status = fuente verdad)
     # --------------------------------------------------------
     cur.execute("""
-        SELECT
-            company_code,
-            fiscal_year,
-            period
+        SELECT 1
         FROM closing_status
         WHERE company_code = %s
           AND fiscal_year = %s
@@ -113,18 +111,21 @@ def preview_gl_closing(payload: Dict[str, Any], conn=Depends(get_db)):
           AND period_closed = TRUE
     """, (company, fiscal_year, period))
 
-    closing = cur.fetchone()
-
-    if not closing:
+    if not cur.fetchone():
         raise HTTPException(
             400,
             "El período no está cerrado. No se puede generar preview."
         )
 
     # --------------------------------------------------------
-    # 2️⃣ GL Preview (FUENTE CONTABLE REAL)
-    # accounting_entries → contexto fiscal
-    # accounting_lines   → detalle contable
+    # 2️⃣ Calcular rango de fechas del período
+    # --------------------------------------------------------
+    start_date = date(fiscal_year, period, 1)
+    end_day = monthrange(fiscal_year, period)[1]
+    end_date = date(fiscal_year, period, end_day)
+
+    # --------------------------------------------------------
+    # 3️⃣ GL Preview desde accounting_lines (POR FECHA)
     # --------------------------------------------------------
     cur.execute("""
         SELECT
@@ -134,18 +135,15 @@ def preview_gl_closing(payload: Dict[str, Any], conn=Depends(get_db)):
             SUM(l.credit) AS credit,
             SUM(l.debit - l.credit) AS balance
         FROM accounting_lines l
-        JOIN accounting_entries e ON e.id = l.entry_id
-        WHERE e.company_code = %s
-          AND e.fiscal_year = %s
-          AND e.period <= %s
+        WHERE l.created_at::date BETWEEN %s AND %s
         GROUP BY l.account_code, l.account_name
         ORDER BY l.account_code
-    """, (company, fiscal_year, period))
+    """, (start_date, end_date))
 
     rows = cur.fetchall() or []
 
     # --------------------------------------------------------
-    # 3️⃣ Respuesta segura
+    # 4️⃣ Respuesta segura
     # --------------------------------------------------------
     if not rows:
         return {
@@ -187,7 +185,6 @@ def preview_gl_closing(payload: Dict[str, Any], conn=Depends(get_db)):
             for r in rows
         ]
     }
-
 # ============================================================
 # POST /closing/gl/post
 # Postea el batch de cierre de Libro Mayor (GL_CLOSING)

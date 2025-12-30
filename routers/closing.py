@@ -10,6 +10,40 @@ router = APIRouter(
     tags=["Closing – Cierre Contable"]
 )
 
+
+@router.post("/period/close")
+def close_period(payload: dict, conn=Depends(get_db)):
+    required = ["company_code", "fiscal_year", "period", "ledger", "closed_by"]
+    for f in required:
+        if f not in payload:
+            raise HTTPException(400, f"Missing field: {f}")
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("""
+        UPDATE closing_status
+        SET period_closed = TRUE,
+            updated_at = NOW()
+        WHERE company_code = %s
+          AND fiscal_year = %s
+          AND period = %s
+          AND ledger = %s
+        RETURNING id
+    """, (
+        payload["company_code"],
+        payload["fiscal_year"],
+        payload["period"],
+        payload["ledger"]
+    ))
+
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, "Periodo no encontrado")
+
+    conn.commit()
+    return {"status": "ok", "message": "Periodo cerrado"}
+
+
 # ============================================================
 # POST /closing/gl/preview
 # Preview del cierre de Libro Mayor (NO postea)

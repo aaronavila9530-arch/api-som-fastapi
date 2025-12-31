@@ -554,20 +554,17 @@ def get_accounting_iva(
     conn=Depends(get_db)
 ):
     """
-    IVA ERP-SOM (DEFINITIVO Y CORRECTO)
-
-    - Fuente única: accounting_lines
-    - Periodo = LEFT(created_at, 7)
-    - El IVA del mes actual SIEMPRE se calcula
-    - El mes anterior SOLO aporta saldo a favor si existe
+    IVA ERP-SOM – DEFINITIVO
+    Fuente única: accounting_lines
+    Periodo basado en created_at
     """
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        # -------------------------------------------------
-        # Helper: IVA por periodo
-        # -------------------------------------------------
+        # ------------------------------
+        # Helper IVA por periodo
+        # ------------------------------
         def iva_por_periodo(p):
             cur.execute("""
                 SELECT
@@ -581,47 +578,49 @@ def get_accounting_iva(
 
                     SUM(
                         CASE
-                            WHEN account_name ILIKE '%IVA crédito fiscal%'
+                            WHEN account_name ILIKE '%IVA crédito%'
                             THEN COALESCE(debit,0) - COALESCE(credit,0)
                             ELSE 0
                         END
                     ) AS iva_credito
                 FROM accounting_lines
-                WHERE LEFT(created_at::text, 7) = %s
+                WHERE to_char(created_at, 'YYYY-MM') = %s
             """, (p,))
+
             row = cur.fetchone() or {}
             return (
-                float(row.get("iva_por_pagar") or 0),
-                float(row.get("iva_credito") or 0)
+                float(row["iva_por_pagar"] or 0),
+                float(row["iva_credito"] or 0)
             )
 
-        # -------------------------------------------------
-        # 1️⃣ IVA DEL PERIODO ACTUAL (SIEMPRE)
-        # -------------------------------------------------
+        # ------------------------------
+        # IVA PERIODO ACTUAL
+        # ------------------------------
         iva_por_pagar, iva_credito = iva_por_periodo(period)
 
-        # -------------------------------------------------
-        # 2️⃣ CALCULAR PERIODO ANTERIOR
-        # -------------------------------------------------
+        # ------------------------------
+        # PERIODO ANTERIOR
+        # ------------------------------
         year, month = map(int, period.split("-"))
         if month == 1:
             prev_period = f"{year-1}-12"
         else:
             prev_period = f"{year}-{month-1:02d}"
 
-        prev_iva_pagar, prev_iva_credito = iva_por_periodo(prev_period)
+        prev_pagar, prev_credito = iva_por_periodo(prev_period)
 
-        # -------------------------------------------------
-        # 3️⃣ SALDO A FAVOR (SOLO SI EXISTE)
-        # -------------------------------------------------
-        if prev_iva_credito > prev_iva_pagar:
-            saldo_favor_anterior = prev_iva_credito - prev_iva_pagar
-        else:
-            saldo_favor_anterior = 0.0
+        # ------------------------------
+        # SALDO A FAVOR
+        # ------------------------------
+        saldo_favor_anterior = (
+            prev_credito - prev_pagar
+            if prev_credito > prev_pagar
+            else 0.0
+        )
 
-        # -------------------------------------------------
-        # 4️⃣ IVA FINAL (NUNCA SE BLOQUEA)
-        # -------------------------------------------------
+        # ------------------------------
+        # IVA FINAL
+        # ------------------------------
         iva_total = iva_por_pagar - iva_credito - saldo_favor_anterior
 
         return {

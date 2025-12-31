@@ -356,7 +356,7 @@ def post_gl_closing(payload: Dict, conn=Depends(get_db)):
 
 
 # ============================================================
-# POST /closing/batch/{id}/reverse
+# POST /closing/batch/{batch_id}/reverse
 # Reversa controlada de batch de cierre
 # ============================================================
 
@@ -371,16 +371,22 @@ def reverse_closing_batch(
 
     Payload esperado:
     {
-        reversed_by: "aaron.avila",
-        reason: "Ajuste requerido en asientos"
+        reversed_by: "<usuario_logeado>",
+        reason: "Motivo de la reversa"
     }
     """
 
-    if "reversed_by" not in payload:
-        raise HTTPException(400, "Missing field: reversed_by")
+    reversed_by = payload.get("reversed_by")
+    if not reversed_by:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing field: reversed_by"
+        )
 
-    reversed_by = payload["reversed_by"]
-    reason = payload.get("reason", "Reversa solicitada por el usuario")
+    reason = payload.get(
+        "reason",
+        "Reversa solicitada por el usuario"
+    )
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -402,8 +408,8 @@ def reverse_closing_batch(
 
         if batch["status"] != "POSTED":
             raise HTTPException(
-                409,
-                "Solo se pueden reversar batches en estado POSTED."
+                status_code=409,
+                detail="Solo se pueden reversar batches en estado POSTED."
             )
 
         # ----------------------------------------------------
@@ -421,8 +427,11 @@ def reverse_closing_batch(
         if dependents:
             codes = ", ".join(d["batch_code"] for d in dependents)
             raise HTTPException(
-                409,
-                f"No se puede reversar. Existen batches dependientes posteados: {codes}"
+                status_code=409,
+                detail=(
+                    "No se puede reversar. "
+                    f"Existen batches dependientes posteados: {codes}"
+                )
             )
 
         # ----------------------------------------------------
@@ -430,12 +439,17 @@ def reverse_closing_batch(
         # ----------------------------------------------------
         cur.execute("""
             UPDATE closing_batches
-            SET status = 'REVERSED',
+            SET
+                status = 'REVERSED',
                 reversed_at = NOW(),
                 reversed_by = %s,
                 reverse_reason = %s
             WHERE id = %s
-        """, (reversed_by, reason, batch_id))
+        """, (
+            reversed_by,
+            reason,
+            batch_id
+        ))
 
         # ----------------------------------------------------
         # 4️⃣ Rollback de flags en closing_status
@@ -458,9 +472,11 @@ def reverse_closing_batch(
         status = cur.fetchone()
 
         if not status:
-            raise HTTPException(500, "Estado de cierre no encontrado.")
+            raise HTTPException(
+                status_code=500,
+                detail="Estado de cierre no encontrado."
+            )
 
-        # Mapa batch_type → flag a revertir
         flag_map = {
             "GL_CLOSING": "gl_closed",
             "TB_POST": "tb_closed",
@@ -471,16 +487,16 @@ def reverse_closing_batch(
         }
 
         flag = flag_map.get(batch["batch_type"])
-
         if not flag:
             raise HTTPException(
-                500,
-                f"Batch type desconocido: {batch['batch_type']}"
+                status_code=500,
+                detail=f"Batch type desconocido: {batch['batch_type']}"
             )
 
         cur.execute(f"""
             UPDATE closing_status
-            SET {flag} = FALSE,
+            SET
+                {flag} = FALSE,
                 last_batch_id = NULL,
                 updated_at = NOW()
             WHERE id = %s
@@ -503,8 +519,8 @@ def reverse_closing_batch(
     except Exception as e:
         conn.rollback()
         raise HTTPException(
-            500,
-            f"Error al reversar batch de cierre: {e}"
+            status_code=500,
+            detail=f"Error al reversar batch de cierre: {e}"
         )
 
 
@@ -637,54 +653,54 @@ def preview_trial_balance(payload: dict, conn=Depends(get_db)):
 # ============================================================
 
 @router.post("/tb/post")
-def post_trial_balance(payload: dict, conn=Depends(get_db)):
+def post_trial_balance(
+    payload: dict,
+    conn=Depends(get_db)
+):
     """
-    Posteo del Balance de Comprobación.
+    Posteo del Balance de Comprobación (TB_POST)
 
     Payload esperado:
     {
         company_code: "MSL-CR",
-        fiscal_year: 2025,
-        period: 12,
-        ledger: "0L",
-        posted_by: "aaron.avila"
+        posted_by: "<usuario_logeado>"
     }
     """
 
-    required_fields = ["company_code", "fiscal_year", "period", "posted_by"]
+    company = payload.get("company_code")
+    posted_by = payload.get("posted_by")
 
-    for f in required_fields:
-        if f not in payload:
-            raise HTTPException(400, f"Missing field: {f}")
+    if not company:
+        raise HTTPException(400, "Missing field: company_code")
 
-    company = payload["company_code"]
-    fiscal_year = payload["fiscal_year"]
-    period = payload["period"]
+    if not posted_by:
+        raise HTTPException(400, "Missing field: posted_by")
+
     ledger = payload.get("ledger", "0L")
-    posted_by = payload["posted_by"]
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
         # ----------------------------------------------------
-        # 1️⃣ Validar estado de cierre
+        # 1️⃣ Obtener estado de cierre ACTIVO del periodo
         # ----------------------------------------------------
         cur.execute("""
             SELECT *
             FROM closing_status
             WHERE company_code = %s
-              AND fiscal_year = %s
-              AND period = %s
               AND ledger = %s
+              AND gl_closed = TRUE
+            ORDER BY fiscal_year DESC, period DESC
+            LIMIT 1
             FOR UPDATE
-        """, (company, fiscal_year, period, ledger))
+        """, (company, ledger))
 
         status = cur.fetchone()
 
-        if not status or not status["gl_closed"]:
+        if not status:
             raise HTTPException(
-                400,
-                "El cierre de Libro Mayor no está posteado. No se puede postear TB."
+                404,
+                "No existe un período con GL cerrado para postear TB."
             )
 
         if status["tb_closed"]:
@@ -693,8 +709,11 @@ def post_trial_balance(payload: dict, conn=Depends(get_db)):
                 "El Balance de Comprobación ya fue posteado para este período."
             )
 
+        fiscal_year = status["fiscal_year"]
+        period = status["period"]
+
         # ----------------------------------------------------
-        # 2️⃣ Obtener batch GL_CLOSING (fuente única)
+        # 2️⃣ Obtener batch GL_CLOSING fuente
         # ----------------------------------------------------
         cur.execute("""
             SELECT id, batch_code
@@ -714,12 +733,11 @@ def post_trial_balance(payload: dict, conn=Depends(get_db)):
         if not gl_batch:
             raise HTTPException(
                 404,
-                "No se encontró batch GL_CLOSING posteado."
+                "No se encontró batch GL_CLOSING posteado para este período."
             )
 
         # ----------------------------------------------------
-        # 3️⃣ SNAPSHOT CORRECTO DEL MAYOR (AGREGADO)
-        # 🔴 ESTA ES LA CORRECCIÓN CLAVE
+        # 3️⃣ Snapshot agregado del GL
         # ----------------------------------------------------
         cur.execute("""
             SELECT
@@ -737,17 +755,10 @@ def post_trial_balance(payload: dict, conn=Depends(get_db)):
 
         rows = cur.fetchall()
 
-        if not rows:
+        if not rows or len(rows) < 3:
             raise HTTPException(
                 500,
-                "El batch GL_CLOSING no contiene líneas."
-            )
-
-        # Validación mínima de integridad
-        if len(rows) < 3:
-            raise HTTPException(
-                500,
-                "TB_POST inválido: snapshot incompleto del GL."
+                "Snapshot del GL inválido o incompleto."
             )
 
         total_debit = sum(r["debit"] for r in rows)
@@ -756,7 +767,7 @@ def post_trial_balance(payload: dict, conn=Depends(get_db)):
         if round(total_debit - total_credit, 2) != 0:
             raise HTTPException(
                 400,
-                "El Balance de Comprobación no cuadra. No se puede postear."
+                "El Balance de Comprobación no cuadra."
             )
 
         # ----------------------------------------------------
@@ -778,8 +789,10 @@ def post_trial_balance(payload: dict, conn=Depends(get_db)):
                 posted_at,
                 posted_by
             )
-            VALUES (%s, 'TB_POST', %s, %s, %s, %s, 'POSTED',
-                    %s, %s, NOW(), %s)
+            VALUES (
+                %s, 'TB_POST', %s, %s, %s, %s,
+                'POSTED', %s, %s, NOW(), %s
+            )
             RETURNING id
         """, (
             batch_code,
@@ -795,7 +808,7 @@ def post_trial_balance(payload: dict, conn=Depends(get_db)):
         tb_batch_id = cur.fetchone()["id"]
 
         # ----------------------------------------------------
-        # 5️⃣ Insertar líneas TB (snapshot)
+        # 5️⃣ Insertar líneas snapshot
         # ----------------------------------------------------
         for r in rows:
             cur.execute("""
@@ -826,7 +839,8 @@ def post_trial_balance(payload: dict, conn=Depends(get_db)):
         # ----------------------------------------------------
         cur.execute("""
             UPDATE closing_status
-            SET tb_closed = TRUE,
+            SET
+                tb_closed = TRUE,
                 last_batch_id = %s,
                 updated_at = NOW()
             WHERE id = %s
@@ -838,7 +852,6 @@ def post_trial_balance(payload: dict, conn=Depends(get_db)):
             "message": "Balance de Comprobación posteado correctamente.",
             "batch_id": tb_batch_id,
             "batch_code": batch_code,
-            "source_gl_batch": gl_batch["batch_code"],
             "company_code": company,
             "fiscal_year": fiscal_year,
             "period": period,
@@ -1280,7 +1293,7 @@ def open_new_fiscal_year(payload: dict, conn=Depends(get_db)):
 
     Payload esperado:
     {
-        company_code: "MSL-CR",
+        company_code: "MSL MARINE SURVEYORS AND LOGISTICS GROUP SRL",
         fiscal_year: 2026,
         source_fiscal_year: 2025,
         ledger: "0L",

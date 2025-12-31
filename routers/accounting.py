@@ -547,6 +547,19 @@ def get_accounting_ledger(
 
 
 
+
+from fastapi import APIRouter, Depends, HTTPException
+from psycopg2.extras import RealDictCursor
+from datetime import datetime
+
+from database import get_db
+
+router = APIRouter(
+    prefix="/accounting",
+    tags=["Accounting"]
+)
+
+
 @router.get("/iva")
 def get_accounting_iva(
     company_code: str,
@@ -554,10 +567,15 @@ def get_accounting_iva(
     conn=Depends(get_db)
 ):
     """
-    Calcula IVA del período (SAP-like):
-    - IVA por pagar
-    - IVA crédito fiscal
-    - Arrastre de saldo a favor
+    Cálculo de IVA BLINDADO (ERP-SOM / SAP-like)
+
+    Prioridad de periodo:
+    1️⃣ accounting_entries.period (si existe y coincide)
+    2️⃣ accounting_lines.created_at (fallback)
+
+    Esto garantiza:
+    - IVA nunca queda en 0 por errores históricos
+    - Se mantiene consistencia contable
     """
 
     if not conn:
@@ -567,7 +585,16 @@ def get_accounting_iva(
 
     try:
         # -------------------------------------------------
-        # 1️⃣ IVA DEL PERÍODO
+        # Preparar fechas del periodo
+        # -------------------------------------------------
+        period_start = datetime.strptime(period + "-01", "%Y-%m-%d")
+        if period_start.month == 12:
+            period_end = period_start.replace(year=period_start.year + 1, month=1)
+        else:
+            period_end = period_start.replace(month=period_start.month + 1)
+
+        # -------------------------------------------------
+        # 1️⃣ IVA DEL PERÍODO (BLINDADO)
         # -------------------------------------------------
         cur.execute("""
             SELECT
@@ -588,10 +615,24 @@ def get_accounting_iva(
                 ) AS iva_credito
 
             FROM accounting_lines l
-            JOIN accounting_entries e ON e.id = l.entry_id
-            WHERE e.company_code = %s
-              AND e.period = %s
-        """, (company_code, period))
+            LEFT JOIN accounting_entries e ON e.id = l.entry_id
+
+            WHERE (
+                    (e.period = %s AND e.company_code = %s)
+                 OR (
+                        e.id IS NULL
+                     OR e.period IS NULL
+                     OR e.company_code IS NULL
+                    )
+                )
+              AND l.created_at >= %s
+              AND l.created_at < %s
+        """, (
+            period,
+            company_code,
+            period_start,
+            period_end
+        ))
 
         row = cur.fetchone() or {}
 
@@ -599,29 +640,43 @@ def get_accounting_iva(
         iva_credito = float(row.get("iva_credito") or 0)
 
         # -------------------------------------------------
-        # 2️⃣ SALDO A FAVOR DEL PERÍODO ANTERIOR
+        # 2️⃣ SALDO A FAVOR ANTERIOR (BLINDADO)
         # -------------------------------------------------
         cur.execute("""
             SELECT
                 SUM(COALESCE(l.debit, 0) - COALESCE(l.credit, 0)) AS saldo_favor
+
             FROM accounting_lines l
-            JOIN accounting_entries e ON e.id = l.entry_id
-            WHERE e.company_code = %s
-              AND e.period < %s
-              AND l.account_name ILIKE '%IVA crédito%'
-        """, (company_code, period))
+            LEFT JOIN accounting_entries e ON e.id = l.entry_id
+
+            WHERE l.account_name ILIKE '%IVA crédito%'
+              AND (
+                    (e.period < %s AND e.company_code = %s)
+                 OR (
+                        e.id IS NULL
+                     OR e.period IS NULL
+                     OR e.company_code IS NULL
+                    )
+                )
+              AND l.created_at < %s
+        """, (
+            period,
+            company_code,
+            period_start
+        ))
 
         row_prev = cur.fetchone() or {}
         saldo_favor_anterior = float(row_prev.get("saldo_favor") or 0)
 
-        # Solo se arrastra si hay saldo a favor
-        if saldo_favor_anterior > 0:
+        if saldo_favor_anterior < 0:
+            saldo_favor_anterior = abs(saldo_favor_anterior)
+        elif saldo_favor_anterior > 0:
             saldo_favor_anterior = saldo_favor_anterior
         else:
             saldo_favor_anterior = 0.0
 
         # -------------------------------------------------
-        # 3️⃣ IVA FINAL A DECLARAR
+        # 3️⃣ IVA FINAL
         # -------------------------------------------------
         iva_total = iva_por_pagar - iva_credito - saldo_favor_anterior
 
@@ -631,9 +686,9 @@ def get_accounting_iva(
             "iva_por_pagar": round(iva_por_pagar, 2),
             "iva_credito": round(iva_credito, 2),
             "saldo_favor_anterior": round(saldo_favor_anterior, 2),
-            "iva_total": round(iva_total, 2)
+            "iva_total": round(iva_total, 2),
+            "calculation_mode": "BLINDADO"
         }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-

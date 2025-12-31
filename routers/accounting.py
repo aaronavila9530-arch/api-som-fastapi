@@ -545,3 +545,95 @@ def get_accounting_ledger(
         "data": list(entries.values())
     }
 
+
+
+@router.get("/iva")
+def get_accounting_iva(
+    company_code: str,
+    period: str,
+    conn=Depends(get_db)
+):
+    """
+    Calcula IVA del período (SAP-like):
+    - IVA por pagar
+    - IVA crédito fiscal
+    - Arrastre de saldo a favor
+    """
+
+    if not conn:
+        raise HTTPException(status_code=500, detail="No DB connection")
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        # -------------------------------------------------
+        # 1️⃣ IVA DEL PERÍODO
+        # -------------------------------------------------
+        cur.execute("""
+            SELECT
+                SUM(
+                    CASE
+                        WHEN l.account_name ILIKE '%IVA por pagar%'
+                        THEN COALESCE(l.credit, 0) - COALESCE(l.debit, 0)
+                        ELSE 0
+                    END
+                ) AS iva_por_pagar,
+
+                SUM(
+                    CASE
+                        WHEN l.account_name ILIKE '%IVA crédito%'
+                        THEN COALESCE(l.debit, 0) - COALESCE(l.credit, 0)
+                        ELSE 0
+                    END
+                ) AS iva_credito
+
+            FROM accounting_lines l
+            JOIN accounting_entries e ON e.id = l.entry_id
+            WHERE e.company_code = %s
+              AND e.period = %s
+        """, (company_code, period))
+
+        row = cur.fetchone() or {}
+
+        iva_por_pagar = float(row.get("iva_por_pagar") or 0)
+        iva_credito = float(row.get("iva_credito") or 0)
+
+        # -------------------------------------------------
+        # 2️⃣ SALDO A FAVOR DEL PERÍODO ANTERIOR
+        # -------------------------------------------------
+        cur.execute("""
+            SELECT
+                SUM(COALESCE(l.debit, 0) - COALESCE(l.credit, 0)) AS saldo_favor
+            FROM accounting_lines l
+            JOIN accounting_entries e ON e.id = l.entry_id
+            WHERE e.company_code = %s
+              AND e.period < %s
+              AND l.account_name ILIKE '%IVA crédito%'
+        """, (company_code, period))
+
+        row_prev = cur.fetchone() or {}
+        saldo_favor_anterior = float(row_prev.get("saldo_favor") or 0)
+
+        # Solo se arrastra si hay saldo a favor
+        if saldo_favor_anterior > 0:
+            saldo_favor_anterior = saldo_favor_anterior
+        else:
+            saldo_favor_anterior = 0.0
+
+        # -------------------------------------------------
+        # 3️⃣ IVA FINAL A DECLARAR
+        # -------------------------------------------------
+        iva_total = iva_por_pagar - iva_credito - saldo_favor_anterior
+
+        return {
+            "company_code": company_code,
+            "period": period,
+            "iva_por_pagar": round(iva_por_pagar, 2),
+            "iva_credito": round(iva_credito, 2),
+            "saldo_favor_anterior": round(saldo_favor_anterior, 2),
+            "iva_total": round(iva_total, 2)
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+

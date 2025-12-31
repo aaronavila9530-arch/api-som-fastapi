@@ -548,92 +548,96 @@ def get_accounting_ledger(
 
 
 
+# ============================================================
+# IVA (FUENTE ÚNICA: accounting_lines.created_at)
+# ============================================================
 @router.get("/iva")
 def get_accounting_iva(
-    period: str,   # 'YYYY-MM'
+    period: str,                    # 'YYYY-MM'
+    company_code: str | None = None,  # compatibilidad (IGNORADO)
     conn=Depends(get_db)
 ):
     """
-    IVA ERP-SOM – DEFINITIVO
-
-    Fuente ÚNICA: accounting_lines
-    Periodo = DATE_TRUNC('month', created_at)
-    Arrastra saldo a favor SOLO si existe
+    IVA ERP-SOM (CORRECTO)
+    - Fuente única: accounting_lines
+    - Periodo = to_char(created_at, 'YYYY-MM')
+    - Mes actual SIEMPRE se calcula
+    - Mes anterior SOLO aporta saldo a favor si (credito > pagar)
     """
+
+    if not conn:
+        raise HTTPException(status_code=500, detail="No DB connection")
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
+    def _norm_period(p: str) -> str:
+        # Acepta 'YYYY-MM' únicamente
+        if not p or len(p) != 7 or p[4] != "-":
+            raise HTTPException(status_code=400, detail="period inválido. Use formato YYYY-MM")
+        return p
+
+    def _calc_for_period(p: str) -> tuple[float, float]:
+        """
+        Retorna: (iva_por_pagar, iva_credito)
+        """
+        cur.execute("""
+            SELECT
+                SUM(
+                    CASE
+                        WHEN account_name ILIKE '%IVA por pagar%'
+                        THEN COALESCE(credit,0) - COALESCE(debit,0)
+                        ELSE 0
+                    END
+                ) AS iva_por_pagar,
+
+                SUM(
+                    CASE
+                        WHEN (
+                            account_name ILIKE '%IVA crédito fiscal%'
+                            OR account_name ILIKE '%IVA credito fiscal%'
+                            OR account_name ILIKE '%IVA crédito%'
+                            OR account_name ILIKE '%IVA credito%'
+                        )
+                        THEN COALESCE(debit,0) - COALESCE(credit,0)
+                        ELSE 0
+                    END
+                ) AS iva_credito
+            FROM accounting_lines
+            WHERE to_char(created_at, 'YYYY-MM') = %s
+        """, (p,))
+
+        r = cur.fetchone() or {}
+        return (float(r.get("iva_por_pagar") or 0), float(r.get("iva_credito") or 0))
+
     try:
-        # -------------------------------------------------
-        # Helper IVA por periodo
-        # -------------------------------------------------
-        def iva_por_periodo(year: int, month: int):
-            cur.execute("""
-                SELECT
-                    SUM(
-                        CASE
-                            WHEN account_name ILIKE '%IVA por pagar%'
-                            THEN COALESCE(credit,0) - COALESCE(debit,0)
-                            ELSE 0
-                        END
-                    ) AS iva_por_pagar,
+        period = _norm_period(period)
 
-                    SUM(
-                        CASE
-                            WHEN account_name ILIKE '%IVA crédito%'
-                            THEN COALESCE(debit,0) - COALESCE(credit,0)
-                            ELSE 0
-                        END
-                    ) AS iva_credito
-                FROM accounting_lines
-                WHERE
-                    DATE_TRUNC('month', created_at)
-                    = DATE_TRUNC('month', %s::date)
-            """, (f"{year}-{month:02d}-01",))
+        # periodo anterior
+        y = int(period[:4])
+        m = int(period[5:7])
+        prev_period = f"{y-1}-12" if m == 1 else f"{y}-{m-1:02d}"
 
-            row = cur.fetchone() or {}
-            return (
-                float(row.get("iva_por_pagar") or 0),
-                float(row.get("iva_credito") or 0)
-            )
+        # mes actual (siempre)
+        iva_por_pagar, iva_credito = _calc_for_period(period)
 
-        # -------------------------------------------------
-        # Periodo actual
-        # -------------------------------------------------
-        year, month = map(int, period.split("-"))
-        iva_por_pagar, iva_credito = iva_por_periodo(year, month)
+        # mes anterior (solo para saldo favor)
+        prev_pagar, prev_credito = _calc_for_period(prev_period)
 
-        # -------------------------------------------------
-        # Periodo anterior
-        # -------------------------------------------------
-        if month == 1:
-            prev_year, prev_month = year - 1, 12
-        else:
-            prev_year, prev_month = year, month - 1
+        saldo_favor_anterior = (prev_credito - prev_pagar) if (prev_credito > prev_pagar) else 0.0
 
-        prev_pagar, prev_credito = iva_por_periodo(prev_year, prev_month)
-
-        # -------------------------------------------------
-        # Saldo a favor (solo si existe)
-        # -------------------------------------------------
-        saldo_favor_anterior = (
-            prev_credito - prev_pagar
-            if prev_credito > prev_pagar
-            else 0.0
-        )
-
-        # -------------------------------------------------
-        # IVA FINAL
-        # -------------------------------------------------
         iva_total = iva_por_pagar - iva_credito - saldo_favor_anterior
 
         return {
             "period": period,
+            "prev_period": prev_period,
             "iva_por_pagar": round(iva_por_pagar, 2),
             "iva_credito": round(iva_credito, 2),
             "saldo_favor_anterior": round(saldo_favor_anterior, 2),
             "iva_total": round(iva_total, 2)
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Esto es CLAVE para que Railway te muestre el error real en logs:
+        raise HTTPException(status_code=500, detail=f"IVA error: {repr(e)}")

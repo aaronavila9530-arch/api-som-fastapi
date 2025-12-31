@@ -718,18 +718,20 @@ def post_trial_balance(payload: dict, conn=Depends(get_db)):
             )
 
         # ----------------------------------------------------
-        # 3️⃣ Leer snapshot del mayor (closing_batch_lines)
+        # 3️⃣ SNAPSHOT CORRECTO DEL MAYOR (AGREGADO)
+        # 🔴 ESTA ES LA CORRECCIÓN CLAVE
         # ----------------------------------------------------
         cur.execute("""
             SELECT
                 account_code,
                 account_name,
-                debit,
-                credit,
-                balance,
+                SUM(debit)   AS debit,
+                SUM(credit)  AS credit,
+                SUM(balance) AS balance,
                 currency
             FROM closing_batch_lines
             WHERE batch_id = %s
+            GROUP BY account_code, account_name, currency
             ORDER BY account_code
         """, (gl_batch["id"],))
 
@@ -739,6 +741,13 @@ def post_trial_balance(payload: dict, conn=Depends(get_db)):
             raise HTTPException(
                 500,
                 "El batch GL_CLOSING no contiene líneas."
+            )
+
+        # Validación mínima de integridad
+        if len(rows) < 3:
+            raise HTTPException(
+                500,
+                "TB_POST inválido: snapshot incompleto del GL."
             )
 
         total_debit = sum(r["debit"] for r in rows)

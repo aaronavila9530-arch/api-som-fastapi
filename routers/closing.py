@@ -194,10 +194,16 @@ def preview_gl_closing(payload: Dict[str, Any], conn=Depends(get_db)):
 # Postea el batch de cierre de Libro Mayor (GL_CLOSING)
 # ============================================================
 
-@router.post("/gl/post")
-def post_gl_closing(payload: Dict, conn=Depends(get_db)):
+from security.auth import get_current_user
 
-    required_fields = ["company_code", "fiscal_year", "period", "posted_by"]
+@router.post("/gl/post")
+def post_gl_closing(
+    payload: Dict,
+    conn=Depends(get_db),
+    current_user=Depends(get_current_user)  # 👈 usuario autenticado
+):
+
+    required_fields = ["company_code", "fiscal_year", "period"]
 
     for f in required_fields:
         if f not in payload:
@@ -206,8 +212,10 @@ def post_gl_closing(payload: Dict, conn=Depends(get_db)):
     company = payload["company_code"]
     fiscal_year = int(payload["fiscal_year"])
     period = int(payload["period"])
-    posted_by = payload["posted_by"]
     ledger = payload.get("ledger", "0L")
+
+    # ✅ Usuario real desde sesión
+    posted_by = current_user["usuario"]
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -270,7 +278,10 @@ def post_gl_closing(payload: Dict, conn=Depends(get_db)):
         # ----------------------------------------------------
         # 3️⃣ Crear batch GL_CLOSING
         # ----------------------------------------------------
-        batch_code = f"GLCL-{fiscal_year}-{period:02d}-{int(datetime.utcnow().timestamp())}"
+        batch_code = (
+            f"GLCL-{fiscal_year}-{period:02d}-"
+            f"{int(datetime.utcnow().timestamp())}"
+        )
 
         cur.execute("""
             INSERT INTO closing_batches (
@@ -346,7 +357,8 @@ def post_gl_closing(payload: Dict, conn=Depends(get_db)):
             "company_code": company,
             "fiscal_year": fiscal_year,
             "period": period,
-            "ledger": ledger
+            "ledger": ledger,
+            "posted_by": posted_by
         }
 
     except HTTPException:
@@ -355,7 +367,10 @@ def post_gl_closing(payload: Dict, conn=Depends(get_db)):
 
     except Exception as e:
         conn.rollback()
-        raise HTTPException(500, f"Error posteando GL: {e}")
+        raise HTTPException(
+            500,
+            f"Error posteando GL: {e}"
+        )
 
 
 # ============================================================
@@ -650,10 +665,13 @@ def preview_trial_balance(payload: dict, conn=Depends(get_db)):
 # Postea el batch de Balance de Comprobación (TB_POST)
 # ============================================================
 
+from security.auth import get_current_user
+
 @router.post("/tb/post")
 def post_trial_balance(
     payload: dict,
-    conn=Depends(get_db)
+    conn=Depends(get_db),
+    current_user=Depends(get_current_user)  # 👈 usuario autenticado
 ):
     """
     Posteo del Balance de Comprobación (TB_POST)
@@ -661,26 +679,24 @@ def post_trial_balance(
     Payload esperado:
     {
         company_code: "MSL MARINE SURVEYORS AND LOGISTICS GROUP SRL",
-        posted_by: "<usuario_logeado>"
+        ledger: "0L"   # opcional
     }
     """
 
     company = payload.get("company_code")
-    posted_by = payload.get("posted_by")
+    ledger = payload.get("ledger", "0L")
 
     if not company:
         raise HTTPException(400, "Missing field: company_code")
 
-    if not posted_by:
-        raise HTTPException(400, "Missing field: posted_by")
-
-    ledger = payload.get("ledger", "0L")
+    # ✅ Usuario real desde sesión
+    posted_by = current_user["usuario"]
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
         # ----------------------------------------------------
-        # 1️⃣ Obtener estado de cierre ACTIVO del periodo
+        # 1️⃣ Obtener estado de cierre ACTIVO del período
         # ----------------------------------------------------
         cur.execute("""
             SELECT *
@@ -759,8 +775,8 @@ def post_trial_balance(
                 "Snapshot del GL inválido o incompleto."
             )
 
-        total_debit = sum(r["debit"] for r in rows)
-        total_credit = sum(r["credit"] for r in rows)
+        total_debit = sum(r["debit"] or 0 for r in rows)
+        total_credit = sum(r["credit"] or 0 for r in rows)
 
         if round(total_debit - total_credit, 2) != 0:
             raise HTTPException(
@@ -771,7 +787,10 @@ def post_trial_balance(
         # ----------------------------------------------------
         # 4️⃣ Crear batch TB_POST
         # ----------------------------------------------------
-        batch_code = f"TB-{fiscal_year}-{period:02d}-{int(datetime.utcnow().timestamp())}"
+        batch_code = (
+            f"TB-{fiscal_year}-{period:02d}-"
+            f"{int(datetime.utcnow().timestamp())}"
+        )
 
         cur.execute("""
             INSERT INTO closing_batches (
@@ -853,7 +872,8 @@ def post_trial_balance(
             "company_code": company,
             "fiscal_year": fiscal_year,
             "period": period,
-            "ledger": ledger
+            "ledger": ledger,
+            "posted_by": posted_by
         }
 
     except HTTPException:
@@ -876,14 +896,32 @@ def post_trial_balance(
 # Cierre del Estado de Resultados (P&L → Patrimonio)
 # ============================================================
 
+from security.auth import get_current_user
+
 @router.post("/pnl/post")
-def post_pnl_closing(payload: dict, conn=Depends(get_db)):
+def post_pnl_closing(
+    payload: dict,
+    conn=Depends(get_db),
+    current_user=Depends(get_current_user)  # 👈 usuario logeado
+):
+    """
+    Cierre del Estado de Resultados (P&L)
+
+    Payload esperado:
+    {
+        company_code: "MSL MARINE SURVEYORS AND LOGISTICS GROUP SRL",
+        fiscal_year: 2025,
+        period: 12,
+        ledger: "0L",                     # opcional
+        equity_account_code: "3XXX",
+        equity_account_name: "Patrimonio"
+    }
+    """
 
     required_fields = [
         "company_code",
         "fiscal_year",
         "period",
-        "posted_by",
         "equity_account_code",
         "equity_account_name"
     ]
@@ -893,10 +931,12 @@ def post_pnl_closing(payload: dict, conn=Depends(get_db)):
             raise HTTPException(400, f"Missing field: {f}")
 
     company = payload["company_code"]
-    fiscal_year = payload["fiscal_year"]
-    period = payload["period"]
+    fiscal_year = int(payload["fiscal_year"])
+    period = int(payload["period"])
     ledger = payload.get("ledger", "0L")
-    posted_by = payload["posted_by"]
+
+    # ✅ Usuario autenticado
+    posted_by = current_user["usuario"]
 
     equity_code = payload["equity_account_code"]
     equity_name = payload["equity_account_name"]
@@ -949,13 +989,20 @@ def post_pnl_closing(payload: dict, conn=Depends(get_db)):
 
         tb_batch = cur.fetchone()
         if not tb_batch:
-            raise HTTPException(404, "No se encontró batch TB_POST posteado.")
+            raise HTTPException(
+                404,
+                "No se encontró batch TB_POST posteado."
+            )
 
         # ----------------------------------------------------
         # 3️⃣ Obtener cuentas de resultados (4xxx / 5xxx)
         # ----------------------------------------------------
         cur.execute("""
-            SELECT account_code, account_name, balance, currency
+            SELECT
+                account_code,
+                account_name,
+                balance,
+                currency
             FROM closing_batch_lines
             WHERE batch_id = %s
               AND (account_code LIKE '4%%' OR account_code LIKE '5%%')
@@ -963,8 +1010,12 @@ def post_pnl_closing(payload: dict, conn=Depends(get_db)):
         """, (tb_batch["id"],))
 
         pnl_accounts = cur.fetchall()
+
         if not pnl_accounts:
-            raise HTTPException(400, "No existen cuentas de resultados con saldo.")
+            raise HTTPException(
+                400,
+                "No existen cuentas de resultados con saldo."
+            )
 
         # ----------------------------------------------------
         # 4️⃣ Calcular resultado neto
@@ -974,21 +1025,37 @@ def post_pnl_closing(payload: dict, conn=Depends(get_db)):
         # ----------------------------------------------------
         # 5️⃣ Crear batch CLOSE_PNL
         # ----------------------------------------------------
-        batch_code = f"PNL-{fiscal_year}-{period:02d}-{int(datetime.utcnow().timestamp())}"
+        batch_code = (
+            f"PNL-{fiscal_year}-{period:02d}-"
+            f"{int(datetime.utcnow().timestamp())}"
+        )
 
         cur.execute("""
             INSERT INTO closing_batches (
-                batch_code, batch_type, company_code,
-                fiscal_year, period, ledger,
-                status, source_batch_id,
-                description, posted_at, posted_by
+                batch_code,
+                batch_type,
+                company_code,
+                fiscal_year,
+                period,
+                ledger,
+                status,
+                source_batch_id,
+                description,
+                posted_at,
+                posted_by
             )
-            VALUES (%s, 'CLOSE_PNL', %s, %s, %s, %s,
-                    'POSTED', %s, %s, NOW(), %s)
+            VALUES (
+                %s, 'CLOSE_PNL', %s, %s, %s, %s,
+                'POSTED', %s, %s, NOW(), %s
+            )
             RETURNING id
         """, (
-            batch_code, company, fiscal_year, period,
-            ledger, tb_batch["id"],
+            batch_code,
+            company,
+            fiscal_year,
+            period,
+            ledger,
+            tb_batch["id"],
             f"Cierre Estado de Resultados {fiscal_year}-{period:02d}",
             posted_by
         ))
@@ -1004,9 +1071,15 @@ def post_pnl_closing(payload: dict, conn=Depends(get_db)):
 
             cur.execute("""
                 INSERT INTO closing_batch_lines (
-                    batch_id, account_code, account_name,
-                    debit, credit, balance,
-                    currency, source_type, source_reference
+                    batch_id,
+                    account_code,
+                    account_name,
+                    debit,
+                    credit,
+                    balance,
+                    currency,
+                    source_type,
+                    source_reference
                 )
                 VALUES (%s, %s, %s, %s, %s, 0, %s, 'PNL', 'CLOSE')
             """, (
@@ -1026,9 +1099,15 @@ def post_pnl_closing(payload: dict, conn=Depends(get_db)):
 
         cur.execute("""
             INSERT INTO closing_batch_lines (
-                batch_id, account_code, account_name,
-                debit, credit, balance,
-                currency, source_type, source_reference
+                batch_id,
+                account_code,
+                account_name,
+                debit,
+                credit,
+                balance,
+                currency,
+                source_type,
+                source_reference
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, 'PNL', 'RESULT')
         """, (
@@ -1046,7 +1125,8 @@ def post_pnl_closing(payload: dict, conn=Depends(get_db)):
         # ----------------------------------------------------
         cur.execute("""
             UPDATE closing_status
-            SET pnl_closed = TRUE,
+            SET
+                pnl_closed = TRUE,
                 last_batch_id = %s,
                 updated_at = NOW()
             WHERE id = %s
@@ -1057,30 +1137,52 @@ def post_pnl_closing(payload: dict, conn=Depends(get_db)):
         return {
             "message": "Cierre de Estado de Resultados posteado correctamente.",
             "batch_id": pnl_batch_id,
-            "resultado_neto": float(result_amount)
+            "resultado_neto": float(result_amount),
+            "posted_by": posted_by
         }
 
-    except:
+    except HTTPException:
         conn.rollback()
         raise
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(
+            500,
+            f"Error posteando cierre de Resultados: {e}"
+        )
 
 
 # ============================================================
 # POST /closing/fs/post
-# Estados Financieros Finales (BLINDADO)
-# - Corrige signo de pasivo/patrimonio (balances vienen negativos)
-# - Valida existencia TB_POST
-# - Opcional: incorpora efecto del CLOSE_PNL (RESULT) a patrimonio
+# Estados Financieros Finales (FS_FINAL)
 # ============================================================
 
 from fastapi import HTTPException, Depends
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
+from security.auth import get_current_user
 
 @router.post("/fs/post")
-def post_financial_statements(payload: dict, conn=Depends(get_db)):
+def post_financial_statements(
+    payload: dict,
+    conn=Depends(get_db),
+    current_user=Depends(get_current_user)  # 👈 usuario logeado
+):
+    """
+    Posteo de Estados Financieros Finales
 
-    required_fields = ["company_code", "fiscal_year", "period", "posted_by"]
+    Payload esperado:
+    {
+        company_code: "MSL MARINE SURVEYORS AND LOGISTICS GROUP SRL",
+        fiscal_year: 2025,
+        period: 12,
+        ledger: "0L"   # opcional
+    }
+    """
+
+    required_fields = ["company_code", "fiscal_year", "period"]
+
     for f in required_fields:
         if f not in payload:
             raise HTTPException(400, f"Missing field: {f}")
@@ -1089,13 +1191,15 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
     fiscal_year = int(payload["fiscal_year"])
     period = int(payload["period"])
     ledger = payload.get("ledger", "0L")
-    posted_by = payload["posted_by"]
+
+    # ✅ Usuario autenticado
+    posted_by = current_user["usuario"]
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
         # ----------------------------------------------------
-        # 1) Validar estado de cierre (con lock)
+        # 1️⃣ Validar estado de cierre (lock fuerte)
         # ----------------------------------------------------
         cur.execute("""
             SELECT *
@@ -1110,19 +1214,28 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
         status = cur.fetchone()
 
         if not status:
-            raise HTTPException(404, "No existe closing_status para ese período/ledger.")
+            raise HTTPException(
+                404,
+                "No existe closing_status para ese período/ledger."
+            )
 
         if not status.get("pnl_closed"):
-            raise HTTPException(400, "El cierre de Resultados (P&L) no está completado.")
+            raise HTTPException(
+                400,
+                "El cierre de Resultados (P&L) no está completado."
+            )
 
         if status.get("fs_closed"):
-            raise HTTPException(409, "Los Estados Financieros ya fueron posteados.")
+            raise HTTPException(
+                409,
+                "Los Estados Financieros ya fueron posteados."
+            )
 
         # ----------------------------------------------------
-        # 2) Obtener TB_POST (obligatorio)
+        # 2️⃣ Obtener TB_POST (obligatorio)
         # ----------------------------------------------------
         cur.execute("""
-            SELECT id, batch_code
+            SELECT id
             FROM closing_batches
             WHERE company_code = %s
               AND fiscal_year = %s
@@ -1135,21 +1248,17 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
         """, (company, fiscal_year, period, ledger))
 
         tb_batch = cur.fetchone()
+
         if not tb_batch:
             raise HTTPException(
                 400,
-                "No se encontró TB_POST posteado. No se pueden postear EEFF sin TB."
+                "No se encontró TB_POST posteado. No se pueden postear EEFF."
             )
 
         tb_batch_id = tb_batch["id"]
 
         # ----------------------------------------------------
-        # 3) Calcular Activo / Pasivo / Patrimonio desde TB_POST
-        #    IMPORTANTE:
-        #    - balance = debit - credit
-        #    - Activo (1xx) normalmente positivo
-        #    - Pasivo (2xx) normalmente NEGATIVO -> se invierte a positivo
-        #    - Patrimonio (3xx) normalmente NEGATIVO -> se invierte a positivo
+        # 3️⃣ Calcular Activo / Pasivo / Patrimonio (desde TB)
         # ----------------------------------------------------
         cur.execute("""
             SELECT
@@ -1162,18 +1271,16 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
 
         bg = cur.fetchone() or {}
 
-        activos_signed = float(bg.get("activos_signed") or 0.0)
-        pasivos_signed = float(bg.get("pasivos_signed") or 0.0)       # usualmente negativo
-        patrimonio_signed = float(bg.get("patrimonio_signed") or 0.0) # usualmente negativo
+        activos_signed = float(bg["activos_signed"] or 0)
+        pasivos_signed = float(bg["pasivos_signed"] or 0)        # negativo
+        patrimonio_signed = float(bg["patrimonio_signed"] or 0)  # negativo
 
         activos = activos_signed
         pasivos = -pasivos_signed
         patrimonio = -patrimonio_signed
 
         # ----------------------------------------------------
-        # 4) (Opcional recomendado) Incorporar efecto del CLOSE_PNL a Patrimonio
-        #    Tu línea RESULT en CLOSE_PNL puede tener 'balance' inconsistente.
-        #    Por eso usamos (debit - credit) que es la contabilidad real.
+        # 4️⃣ Incorporar efecto del CLOSE_PNL (RESULT → Equity)
         # ----------------------------------------------------
         cur.execute("""
             SELECT id
@@ -1193,8 +1300,7 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
 
         if pnl_batch:
             cur.execute("""
-                SELECT
-                    COALESCE(SUM(debit - credit), 0) AS effect
+                SELECT COALESCE(SUM(debit - credit), 0) AS effect
                 FROM closing_batch_lines
                 WHERE batch_id = %s
                   AND source_type = 'PNL'
@@ -1202,43 +1308,59 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
             """, (pnl_batch["id"],))
 
             pnl_row = cur.fetchone() or {}
-            pnl_effect = float(pnl_row.get("effect") or 0.0)
+            pnl_effect = float(pnl_row["effect"] or 0)
 
-            # effect = debit-credit.
-            # Si fue una ganancia, normalmente credit > debit => effect NEGATIVO.
-            # Para patrimonio positivo, invertimos:
+            # Invertir signo para patrimonio positivo
             patrimonio += (-pnl_effect)
 
         # ----------------------------------------------------
-        # 5) Validación Balance General (con convención positiva)
+        # 5️⃣ Validación Balance General
         # ----------------------------------------------------
         diff = round(activos - (pasivos + patrimonio), 2)
+
         if diff != 0:
             raise HTTPException(
                 400,
-                f"El Balance General no cuadra. Activo={activos:.2f}, "
-                f"Pasivo={pasivos:.2f}, Patrimonio={patrimonio:.2f}, Diff={diff:.2f}. "
-                f"(TB_POST={tb_batch_id})"
+                f"El Balance General no cuadra. "
+                f"Activo={activos:.2f}, "
+                f"Pasivo={pasivos:.2f}, "
+                f"Patrimonio={patrimonio:.2f}, "
+                f"Diferencia={diff:.2f}"
             )
 
         # ----------------------------------------------------
-        # 6) Crear batch FS_FINAL
+        # 6️⃣ Crear batch FS_FINAL
         # ----------------------------------------------------
-        batch_code = f"FS-{fiscal_year}-{period:02d}-{int(datetime.utcnow().timestamp())}"
+        batch_code = (
+            f"FS-{fiscal_year}-{period:02d}-"
+            f"{int(datetime.utcnow().timestamp())}"
+        )
 
         cur.execute("""
             INSERT INTO closing_batches (
-                batch_code, batch_type, company_code,
-                fiscal_year, period, ledger,
-                status, source_batch_id,
-                description, posted_at, posted_by
+                batch_code,
+                batch_type,
+                company_code,
+                fiscal_year,
+                period,
+                ledger,
+                status,
+                source_batch_id,
+                description,
+                posted_at,
+                posted_by
             )
-            VALUES (%s, 'FS_FINAL', %s, %s, %s, %s,
-                    'POSTED', %s, %s, NOW(), %s)
+            VALUES (
+                %s, 'FS_FINAL', %s, %s, %s, %s,
+                'POSTED', %s, %s, NOW(), %s
+            )
             RETURNING id
         """, (
             batch_code,
-            company, fiscal_year, period, ledger,
+            company,
+            fiscal_year,
+            period,
+            ledger,
             tb_batch_id,
             f"Estados Financieros Finales {fiscal_year}-{period:02d}",
             posted_by
@@ -1247,11 +1369,12 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
         fs_batch_id = cur.fetchone()["id"]
 
         # ----------------------------------------------------
-        # 7) Actualizar closing_status
+        # 7️⃣ Actualizar closing_status
         # ----------------------------------------------------
         cur.execute("""
             UPDATE closing_status
-            SET fs_closed = TRUE,
+            SET
+                fs_closed = TRUE,
                 last_batch_id = %s,
                 updated_at = NOW()
             WHERE id = %s
@@ -1263,11 +1386,11 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
             "message": "Estados Financieros Finales posteados correctamente.",
             "batch_id": fs_batch_id,
             "batch_code": batch_code,
-            "source_tb_batch_id": tb_batch_id,
-            "activo": float(round(activos, 2)),
-            "pasivo": float(round(pasivos, 2)),
-            "patrimonio": float(round(patrimonio, 2)),
-            "pnl_effect_in_equity": float(round(pnl_effect, 2))
+            "activo": round(activos, 2),
+            "pasivo": round(pasivos, 2),
+            "patrimonio": round(patrimonio, 2),
+            "pnl_effect_in_equity": round(pnl_effect, 2),
+            "posted_by": posted_by
         }
 
     except HTTPException:
@@ -1276,7 +1399,10 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
 
     except Exception as e:
         conn.rollback()
-        raise HTTPException(500, f"Error posteando EEFF: {e}")
+        raise HTTPException(
+            500,
+            f"Error posteando Estados Financieros: {e}"
+        )
 
 
 # ============================================================
@@ -1284,11 +1410,16 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
 # Apertura automática de nuevo ejercicio fiscal (carryforward)
 # ============================================================
 
+from fastapi import HTTPException, Depends
+from psycopg2.extras import RealDictCursor
+from datetime import datetime
+from security.auth import get_current_user
+
 @router.post("/fy/open")
 def open_new_fiscal_year(
     payload: dict,
     conn=Depends(get_db),
-    current_user=Depends(get_current_user)  # 👈 usuario logeado
+    current_user=Depends(get_current_user)  # 👈 usuario autenticado
 ):
     """
     Apertura automática de nuevo ejercicio fiscal.
@@ -1306,18 +1437,19 @@ def open_new_fiscal_year(
     if not company:
         raise HTTPException(400, "Missing field: company_code")
 
+    # ✅ Usuario real del sistema
     posted_by = current_user["usuario"]
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
         # ----------------------------------------------------
-        # 1️⃣ Detectar último ejercicio cerrado (FS_FINAL)
+        # 1️⃣ Obtener ÚLTIMO ejercicio fiscal cerrado (FS_FINAL)
         # ----------------------------------------------------
         cur.execute("""
             SELECT
-                cb.id            AS fs_batch_id,
-                cb.fiscal_year   AS source_year
+                cb.id          AS fs_batch_id,
+                cb.fiscal_year AS source_year
             FROM closing_batches cb
             WHERE cb.company_code = %s
               AND cb.ledger = %s
@@ -1340,7 +1472,7 @@ def open_new_fiscal_year(
         new_year = source_year + 1
 
         # ----------------------------------------------------
-        # 2️⃣ Validar que el nuevo ejercicio no exista
+        # 2️⃣ Validar que el nuevo ejercicio NO exista
         # ----------------------------------------------------
         cur.execute("""
             SELECT 1
@@ -1360,7 +1492,10 @@ def open_new_fiscal_year(
         # ----------------------------------------------------
         # 3️⃣ Crear batch OPEN_FY
         # ----------------------------------------------------
-        batch_code = f"OPEN-{new_year}-{int(datetime.utcnow().timestamp())}"
+        batch_code = (
+            f"OPEN-{new_year}-"
+            f"{int(datetime.utcnow().timestamp())}"
+        )
 
         cur.execute("""
             INSERT INTO closing_batches (
@@ -1396,7 +1531,7 @@ def open_new_fiscal_year(
         open_batch_id = cur.fetchone()["id"]
 
         # ----------------------------------------------------
-        # 4️⃣ Carryforward cuentas de balance (1,2,3)
+        # 4️⃣ Carryforward de cuentas de balance (1xxx,2xxx,3xxx)
         # ----------------------------------------------------
         cur.execute("""
             SELECT
@@ -1413,7 +1548,9 @@ def open_new_fiscal_year(
               )
         """, (fs["fs_batch_id"],))
 
-        for r in cur.fetchall():
+        rows = cur.fetchall() or []
+
+        for r in rows:
             debit = r["balance"] if r["balance"] > 0 else 0
             credit = abs(r["balance"]) if r["balance"] < 0 else 0
 
@@ -1458,7 +1595,10 @@ def open_new_fiscal_year(
                 updated_at,
                 closed_by
             )
-            VALUES (%s, %s, 1, %s, TRUE, NOW(), NOW(), %s)
+            VALUES (
+                %s, %s, 1, %s,
+                TRUE, NOW(), NOW(), %s
+            )
         """, (
             company,
             new_year,

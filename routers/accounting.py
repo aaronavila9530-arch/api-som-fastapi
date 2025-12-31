@@ -548,18 +548,6 @@ def get_accounting_ledger(
 
 
 
-from fastapi import APIRouter, Depends, HTTPException
-from psycopg2.extras import RealDictCursor
-from datetime import datetime
-
-from database import get_db
-
-router = APIRouter(
-    prefix="/accounting",
-    tags=["Accounting"]
-)
-
-
 @router.get("/iva")
 def get_accounting_iva(
     company_code: str,

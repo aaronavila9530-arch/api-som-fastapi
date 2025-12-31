@@ -848,13 +848,7 @@ def post_trial_balance(payload: dict, conn=Depends(get_db)):
         )
 
 
-from fastapi import APIRouter, Depends, HTTPException
-from psycopg2.extras import RealDictCursor
-from datetime import datetime
 
-from database import get_db
-
-router = APIRouter(prefix="/closing", tags=["Closing"])
 
 
 # ============================================================

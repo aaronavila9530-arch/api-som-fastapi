@@ -848,6 +848,15 @@ def post_trial_balance(payload: dict, conn=Depends(get_db)):
         )
 
 
+from fastapi import APIRouter, Depends, HTTPException
+from psycopg2.extras import RealDictCursor
+from datetime import datetime
+
+from database import get_db
+
+router = APIRouter(prefix="/closing", tags=["Closing"])
+
+
 # ============================================================
 # POST /closing/pnl/post
 # Cierre del Estado de Resultados (P&L → Patrimonio)
@@ -855,20 +864,6 @@ def post_trial_balance(payload: dict, conn=Depends(get_db)):
 
 @router.post("/pnl/post")
 def post_pnl_closing(payload: dict, conn=Depends(get_db)):
-    """
-    Cierre automático del Estado de Resultados.
-
-    Payload esperado:
-    {
-        company_code: "MSL-CR",
-        fiscal_year: 2025,
-        period: 12,
-        ledger: "0L",
-        equity_account_code: "3XXX-RESULTADO_EJERCICIO",
-        equity_account_name: "Resultado del Ejercicio",
-        posted_by: "aaron.avila"
-    }
-    """
 
     required_fields = [
         "company_code",
@@ -923,10 +918,10 @@ def post_pnl_closing(payload: dict, conn=Depends(get_db)):
             )
 
         # ----------------------------------------------------
-        # 2️⃣ Obtener batch TB_POST (fuente única)
+        # 2️⃣ Obtener batch TB_POST
         # ----------------------------------------------------
         cur.execute("""
-            SELECT id, batch_code
+            SELECT id
             FROM closing_batches
             WHERE company_code = %s
               AND fiscal_year = %s
@@ -939,42 +934,28 @@ def post_pnl_closing(payload: dict, conn=Depends(get_db)):
         """, (company, fiscal_year, period, ledger))
 
         tb_batch = cur.fetchone()
-
         if not tb_batch:
-            raise HTTPException(
-                404,
-                "No se encontró batch TB_POST posteado."
-            )
+            raise HTTPException(404, "No se encontró batch TB_POST posteado.")
 
         # ----------------------------------------------------
         # 3️⃣ Obtener cuentas de resultados (4xxx / 5xxx)
         # ----------------------------------------------------
         cur.execute("""
-            SELECT
-                account_code,
-                account_name,
-                balance,
-                currency
+            SELECT account_code, account_name, balance, currency
             FROM closing_batch_lines
             WHERE batch_id = %s
               AND (account_code LIKE '4%%' OR account_code LIKE '5%%')
               AND balance <> 0
-            ORDER BY account_code
         """, (tb_batch["id"],))
 
         pnl_accounts = cur.fetchall()
-
         if not pnl_accounts:
-            raise HTTPException(
-                400,
-                "No existen cuentas de resultados con saldo."
-            )
+            raise HTTPException(400, "No existen cuentas de resultados con saldo.")
 
         # ----------------------------------------------------
         # 4️⃣ Calcular resultado neto
         # ----------------------------------------------------
         result_amount = sum(a["balance"] for a in pnl_accounts)
-        # Resultado positivo = utilidad, negativo = pérdida
 
         # ----------------------------------------------------
         # 5️⃣ Crear batch CLOSE_PNL
@@ -983,28 +964,17 @@ def post_pnl_closing(payload: dict, conn=Depends(get_db)):
 
         cur.execute("""
             INSERT INTO closing_batches (
-                batch_code,
-                batch_type,
-                company_code,
-                fiscal_year,
-                period,
-                ledger,
-                status,
-                source_batch_id,
-                description,
-                posted_at,
-                posted_by
+                batch_code, batch_type, company_code,
+                fiscal_year, period, ledger,
+                status, source_batch_id,
+                description, posted_at, posted_by
             )
-            VALUES (%s, 'CLOSE_PNL', %s, %s, %s, %s, 'POSTED',
-                    %s, %s, NOW(), %s)
+            VALUES (%s, 'CLOSE_PNL', %s, %s, %s, %s,
+                    'POSTED', %s, %s, NOW(), %s)
             RETURNING id
         """, (
-            batch_code,
-            company,
-            fiscal_year,
-            period,
-            ledger,
-            tb_batch["id"],
+            batch_code, company, fiscal_year, period,
+            ledger, tb_batch["id"],
             f"Cierre Estado de Resultados {fiscal_year}-{period:02d}",
             posted_by
         ))
@@ -1012,7 +982,7 @@ def post_pnl_closing(payload: dict, conn=Depends(get_db)):
         pnl_batch_id = cur.fetchone()["id"]
 
         # ----------------------------------------------------
-        # 6️⃣ Insertar líneas de cierre (cuentas P&L → 0)
+        # 6️⃣ Cerrar cuentas P&L
         # ----------------------------------------------------
         for acc in pnl_accounts:
             debit = abs(acc["balance"]) if acc["balance"] < 0 else 0
@@ -1020,15 +990,9 @@ def post_pnl_closing(payload: dict, conn=Depends(get_db)):
 
             cur.execute("""
                 INSERT INTO closing_batch_lines (
-                    batch_id,
-                    account_code,
-                    account_name,
-                    debit,
-                    credit,
-                    balance,
-                    currency,
-                    source_type,
-                    source_reference
+                    batch_id, account_code, account_name,
+                    debit, credit, balance,
+                    currency, source_type, source_reference
                 )
                 VALUES (%s, %s, %s, %s, %s, 0, %s, 'PNL', 'CLOSE')
             """, (
@@ -1041,22 +1005,16 @@ def post_pnl_closing(payload: dict, conn=Depends(get_db)):
             ))
 
         # ----------------------------------------------------
-        # 7️⃣ Línea contra Patrimonio (resultado neto)
+        # 7️⃣ Resultado contra Patrimonio
         # ----------------------------------------------------
-        debit_eq = result_amount if result_amount < 0 else 0
+        debit_eq = abs(result_amount) if result_amount < 0 else 0
         credit_eq = result_amount if result_amount > 0 else 0
 
         cur.execute("""
             INSERT INTO closing_batch_lines (
-                batch_id,
-                account_code,
-                account_name,
-                debit,
-                credit,
-                balance,
-                currency,
-                source_type,
-                source_reference
+                batch_id, account_code, account_name,
+                debit, credit, balance,
+                currency, source_type, source_reference
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, 'PNL', 'RESULT')
         """, (
@@ -1085,48 +1043,23 @@ def post_pnl_closing(payload: dict, conn=Depends(get_db)):
         return {
             "message": "Cierre de Estado de Resultados posteado correctamente.",
             "batch_id": pnl_batch_id,
-            "batch_code": batch_code,
-            "resultado_neto": float(result_amount),
-            "equity_account": equity_code,
-            "company_code": company,
-            "fiscal_year": fiscal_year,
-            "period": period
+            "resultado_neto": float(result_amount)
         }
 
-    except HTTPException:
+    except:
         conn.rollback()
         raise
-
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(
-            500,
-            f"Error posteando cierre de Resultados: {e}"
-        )
 
 
 # ============================================================
 # POST /closing/fs/post
-# Postea Estados Financieros Finales (Balance General)
+# Estados Financieros Finales (CORREGIDO)
 # ============================================================
 
 @router.post("/fs/post")
 def post_financial_statements(payload: dict, conn=Depends(get_db)):
-    """
-    Posteo de Estados Financieros Finales.
-
-    Payload esperado:
-    {
-        company_code: "MSL-CR",
-        fiscal_year: 2025,
-        period: 12,
-        ledger: "0L",
-        posted_by: "aaron.avila"
-    }
-    """
 
     required_fields = ["company_code", "fiscal_year", "period", "posted_by"]
-
     for f in required_fields:
         if f not in payload:
             raise HTTPException(400, f"Missing field: {f}")
@@ -1156,40 +1089,13 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
         status = cur.fetchone()
 
         if not status or not status["pnl_closed"]:
-            raise HTTPException(
-                400,
-                "El cierre de Resultados no está completado."
-            )
+            raise HTTPException(400, "El cierre de Resultados no está completado.")
 
         if status["fs_closed"]:
-            raise HTTPException(
-                409,
-                "Los Estados Financieros ya fueron posteados."
-            )
+            raise HTTPException(409, "Los Estados Financieros ya fueron posteados.")
 
         # ----------------------------------------------------
-        # 2️⃣ Obtener último TB_POST
-        # ----------------------------------------------------
-        cur.execute("""
-            SELECT id
-            FROM closing_batches
-            WHERE company_code = %s
-              AND fiscal_year = %s
-              AND period = %s
-              AND ledger = %s
-              AND batch_type = 'TB_POST'
-              AND status = 'POSTED'
-            ORDER BY posted_at DESC
-            LIMIT 1
-        """, (company, fiscal_year, period, ledger))
-
-        tb_batch = cur.fetchone()
-
-        if not tb_batch:
-            raise HTTPException(404, "TB_POST no encontrado.")
-
-        # ----------------------------------------------------
-        # 3️⃣ Calcular Balance General
+        # 2️⃣ Calcular Balance General usando TB_POST + CLOSE_PNL
         # ----------------------------------------------------
         cur.execute("""
             SELECT
@@ -1197,8 +1103,17 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
                 SUM(CASE WHEN account_code LIKE '2%%' THEN balance ELSE 0 END) AS pasivos,
                 SUM(CASE WHEN account_code LIKE '3%%' THEN balance ELSE 0 END) AS patrimonio
             FROM closing_batch_lines
-            WHERE batch_id = %s
-        """, (tb_batch["id"],))
+            WHERE batch_id IN (
+                SELECT id
+                FROM closing_batches
+                WHERE company_code = %s
+                  AND fiscal_year = %s
+                  AND period = %s
+                  AND ledger = %s
+                  AND batch_type IN ('TB_POST', 'CLOSE_PNL')
+                  AND status = 'POSTED'
+            )
+        """, (company, fiscal_year, period, ledger))
 
         bg = cur.fetchone()
 
@@ -1213,7 +1128,7 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
             )
 
         # ----------------------------------------------------
-        # 4️⃣ Crear batch FS_FINAL
+        # 3️⃣ Crear batch FS_FINAL
         # ----------------------------------------------------
         batch_code = f"FS-{fiscal_year}-{period:02d}-{int(datetime.utcnow().timestamp())}"
 
@@ -1221,19 +1136,15 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
             INSERT INTO closing_batches (
                 batch_code, batch_type, company_code,
                 fiscal_year, period, ledger,
-                status, source_batch_id,
-                description, posted_at, posted_by
+                status, description, posted_at, posted_by
             )
             VALUES (%s, 'FS_FINAL', %s, %s, %s, %s,
-                    'POSTED', %s, %s, NOW(), %s)
+                    'POSTED', %s, NOW(), %s)
             RETURNING id
         """, (
             batch_code,
-            company,
-            fiscal_year,
-            period,
+            company, fiscal_year, period,
             ledger,
-            tb_batch["id"],
             f"Estados Financieros Finales {fiscal_year}",
             posted_by
         ))
@@ -1241,7 +1152,7 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
         fs_batch_id = cur.fetchone()["id"]
 
         # ----------------------------------------------------
-        # 5️⃣ Actualizar closing_status
+        # 4️⃣ Actualizar closing_status
         # ----------------------------------------------------
         cur.execute("""
             UPDATE closing_status
@@ -1256,18 +1167,14 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
         return {
             "message": "Estados Financieros Finales posteados correctamente.",
             "batch_id": fs_batch_id,
-            "batch_code": batch_code,
             "activo": float(activos),
             "pasivo": float(pasivos),
             "patrimonio": float(patrimonio)
         }
 
-    except HTTPException:
+    except:
         conn.rollback()
         raise
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(500, f"Error posteando EEFF: {e}")
 
 
 # ============================================================

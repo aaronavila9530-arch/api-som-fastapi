@@ -550,21 +550,25 @@ def get_accounting_ledger(
 
 @router.get("/iva")
 def get_accounting_iva(
-    period: str,   # 'YYYY-MM'
+    period: str,   # YYYY-MM
     conn=Depends(get_db)
 ):
     """
     IVA ERP-SOM – DEFINITIVO
-    Fuente única: accounting_lines
-    Periodo basado en created_at
+
+    Reglas:
+    - Fuente ÚNICA: accounting_lines
+    - Periodo = LEFT(created_at, 7)
+    - IVA del mes actual SIEMPRE se calcula
+    - Mes anterior SOLO aporta saldo a favor si existe
     """
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        # ------------------------------
-        # Helper IVA por periodo
-        # ------------------------------
+        # --------------------------------------------
+        # Helper: IVA por periodo
+        # --------------------------------------------
         def iva_por_periodo(p):
             cur.execute("""
                 SELECT
@@ -584,43 +588,42 @@ def get_accounting_iva(
                         END
                     ) AS iva_credito
                 FROM accounting_lines
-                WHERE to_char(created_at, 'YYYY-MM') = %s
+                WHERE LEFT(created_at::text, 7) = %s
             """, (p,))
 
             row = cur.fetchone() or {}
             return (
-                float(row["iva_por_pagar"] or 0),
-                float(row["iva_credito"] or 0)
+                float(row.get("iva_por_pagar") or 0),
+                float(row.get("iva_credito") or 0)
             )
 
-        # ------------------------------
-        # IVA PERIODO ACTUAL
-        # ------------------------------
+        # --------------------------------------------
+        # 1️⃣ IVA DEL MES ACTUAL (SIEMPRE)
+        # --------------------------------------------
         iva_por_pagar, iva_credito = iva_por_periodo(period)
 
-        # ------------------------------
-        # PERIODO ANTERIOR
-        # ------------------------------
+        # --------------------------------------------
+        # 2️⃣ CALCULAR MES ANTERIOR
+        # --------------------------------------------
         year, month = map(int, period.split("-"))
         if month == 1:
             prev_period = f"{year-1}-12"
         else:
             prev_period = f"{year}-{month-1:02d}"
 
-        prev_pagar, prev_credito = iva_por_periodo(prev_period)
+        prev_iva_pagar, prev_iva_credito = iva_por_periodo(prev_period)
 
-        # ------------------------------
-        # SALDO A FAVOR
-        # ------------------------------
-        saldo_favor_anterior = (
-            prev_credito - prev_pagar
-            if prev_credito > prev_pagar
-            else 0.0
-        )
+        # --------------------------------------------
+        # 3️⃣ SALDO A FAVOR (SOLO SI EXISTE)
+        # --------------------------------------------
+        if prev_iva_credito > prev_iva_pagar:
+            saldo_favor_anterior = prev_iva_credito - prev_iva_pagar
+        else:
+            saldo_favor_anterior = 0.0
 
-        # ------------------------------
-        # IVA FINAL
-        # ------------------------------
+        # --------------------------------------------
+        # 4️⃣ IVA FINAL
+        # --------------------------------------------
         iva_total = iva_por_pagar - iva_credito - saldo_favor_anterior
 
         return {

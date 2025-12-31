@@ -550,132 +550,86 @@ def get_accounting_ledger(
 
 @router.get("/iva")
 def get_accounting_iva(
-    company_code: str,
-    period: str,
+    period: str,   # 'YYYY-MM'
     conn=Depends(get_db)
 ):
     """
-    Cálculo de IVA BLINDADO (ERP-SOM / SAP-like)
+    IVA ERP-SOM (DEFINITIVO Y CORRECTO)
 
-    Prioridad de periodo:
-    1️⃣ accounting_entries.period (si existe y coincide)
-    2️⃣ accounting_lines.created_at (fallback)
-
-    Esto garantiza:
-    - IVA nunca queda en 0 por errores históricos
-    - Se mantiene consistencia contable
+    - Fuente única: accounting_lines
+    - Periodo = LEFT(created_at, 7)
+    - El IVA del mes actual SIEMPRE se calcula
+    - El mes anterior SOLO aporta saldo a favor si existe
     """
-
-    if not conn:
-        raise HTTPException(status_code=500, detail="No DB connection")
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
         # -------------------------------------------------
-        # Preparar fechas del periodo
+        # Helper: IVA por periodo
         # -------------------------------------------------
-        period_start = datetime.strptime(period + "-01", "%Y-%m-%d")
-        if period_start.month == 12:
-            period_end = period_start.replace(year=period_start.year + 1, month=1)
+        def iva_por_periodo(p):
+            cur.execute("""
+                SELECT
+                    SUM(
+                        CASE
+                            WHEN account_name ILIKE '%IVA por pagar%'
+                            THEN COALESCE(credit,0) - COALESCE(debit,0)
+                            ELSE 0
+                        END
+                    ) AS iva_por_pagar,
+
+                    SUM(
+                        CASE
+                            WHEN account_name ILIKE '%IVA crédito fiscal%'
+                            THEN COALESCE(debit,0) - COALESCE(credit,0)
+                            ELSE 0
+                        END
+                    ) AS iva_credito
+                FROM accounting_lines
+                WHERE LEFT(created_at::text, 7) = %s
+            """, (p,))
+            row = cur.fetchone() or {}
+            return (
+                float(row.get("iva_por_pagar") or 0),
+                float(row.get("iva_credito") or 0)
+            )
+
+        # -------------------------------------------------
+        # 1️⃣ IVA DEL PERIODO ACTUAL (SIEMPRE)
+        # -------------------------------------------------
+        iva_por_pagar, iva_credito = iva_por_periodo(period)
+
+        # -------------------------------------------------
+        # 2️⃣ CALCULAR PERIODO ANTERIOR
+        # -------------------------------------------------
+        year, month = map(int, period.split("-"))
+        if month == 1:
+            prev_period = f"{year-1}-12"
         else:
-            period_end = period_start.replace(month=period_start.month + 1)
+            prev_period = f"{year}-{month-1:02d}"
+
+        prev_iva_pagar, prev_iva_credito = iva_por_periodo(prev_period)
 
         # -------------------------------------------------
-        # 1️⃣ IVA DEL PERÍODO (BLINDADO)
+        # 3️⃣ SALDO A FAVOR (SOLO SI EXISTE)
         # -------------------------------------------------
-        cur.execute("""
-            SELECT
-                SUM(
-                    CASE
-                        WHEN l.account_name ILIKE '%IVA por pagar%'
-                        THEN COALESCE(l.credit, 0) - COALESCE(l.debit, 0)
-                        ELSE 0
-                    END
-                ) AS iva_por_pagar,
-
-                SUM(
-                    CASE
-                        WHEN l.account_name ILIKE '%IVA crédito%'
-                        THEN COALESCE(l.debit, 0) - COALESCE(l.credit, 0)
-                        ELSE 0
-                    END
-                ) AS iva_credito
-
-            FROM accounting_lines l
-            LEFT JOIN accounting_entries e ON e.id = l.entry_id
-
-            WHERE (
-                    (e.period = %s AND e.company_code = %s)
-                 OR (
-                        e.id IS NULL
-                     OR e.period IS NULL
-                     OR e.company_code IS NULL
-                    )
-                )
-              AND l.created_at >= %s
-              AND l.created_at < %s
-        """, (
-            period,
-            company_code,
-            period_start,
-            period_end
-        ))
-
-        row = cur.fetchone() or {}
-
-        iva_por_pagar = float(row.get("iva_por_pagar") or 0)
-        iva_credito = float(row.get("iva_credito") or 0)
-
-        # -------------------------------------------------
-        # 2️⃣ SALDO A FAVOR ANTERIOR (BLINDADO)
-        # -------------------------------------------------
-        cur.execute("""
-            SELECT
-                SUM(COALESCE(l.debit, 0) - COALESCE(l.credit, 0)) AS saldo_favor
-
-            FROM accounting_lines l
-            LEFT JOIN accounting_entries e ON e.id = l.entry_id
-
-            WHERE l.account_name ILIKE '%IVA crédito%'
-              AND (
-                    (e.period < %s AND e.company_code = %s)
-                 OR (
-                        e.id IS NULL
-                     OR e.period IS NULL
-                     OR e.company_code IS NULL
-                    )
-                )
-              AND l.created_at < %s
-        """, (
-            period,
-            company_code,
-            period_start
-        ))
-
-        row_prev = cur.fetchone() or {}
-        saldo_favor_anterior = float(row_prev.get("saldo_favor") or 0)
-
-        if saldo_favor_anterior < 0:
-            saldo_favor_anterior = abs(saldo_favor_anterior)
-        elif saldo_favor_anterior > 0:
-            saldo_favor_anterior = saldo_favor_anterior
+        if prev_iva_credito > prev_iva_pagar:
+            saldo_favor_anterior = prev_iva_credito - prev_iva_pagar
         else:
             saldo_favor_anterior = 0.0
 
         # -------------------------------------------------
-        # 3️⃣ IVA FINAL
+        # 4️⃣ IVA FINAL (NUNCA SE BLOQUEA)
         # -------------------------------------------------
         iva_total = iva_por_pagar - iva_credito - saldo_favor_anterior
 
         return {
-            "company_code": company_code,
             "period": period,
             "iva_por_pagar": round(iva_por_pagar, 2),
             "iva_credito": round(iva_credito, 2),
             "saldo_favor_anterior": round(saldo_favor_anterior, 2),
-            "iva_total": round(iva_total, 2),
-            "calculation_mode": "BLINDADO"
+            "iva_total": round(iva_total, 2)
         }
 
     except Exception as e:

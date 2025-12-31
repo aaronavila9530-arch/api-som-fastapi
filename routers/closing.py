@@ -1089,7 +1089,7 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
             raise HTTPException(409, "Los Estados Financieros ya fueron posteados.")
 
         # ----------------------------------------------------
-        # 2️⃣ Calcular Balance General usando SOLO TB_POST
+        # 2️⃣ Calcular Balance General SOLO desde TB_POST
         # ----------------------------------------------------
         cur.execute("""
             SELECT
@@ -1122,6 +1122,7 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
                 400,
                 "El Balance General no cuadra (Activo ≠ Pasivo + Patrimonio)."
             )
+
 
         # ----------------------------------------------------
         # 3️⃣ Crear batch FS_FINAL

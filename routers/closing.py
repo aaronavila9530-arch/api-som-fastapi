@@ -1089,7 +1089,7 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
             raise HTTPException(409, "Los Estados Financieros ya fueron posteados.")
 
         # ----------------------------------------------------
-        # 2️⃣ Calcular Balance General usando TB_POST + CLOSE_PNL
+        # 2️⃣ Calcular Balance General usando SOLO TB_POST
         # ----------------------------------------------------
         cur.execute("""
             SELECT
@@ -1097,15 +1097,17 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
                 SUM(CASE WHEN account_code LIKE '2%%' THEN balance ELSE 0 END) AS pasivos,
                 SUM(CASE WHEN account_code LIKE '3%%' THEN balance ELSE 0 END) AS patrimonio
             FROM closing_batch_lines
-            WHERE batch_id IN (
+            WHERE batch_id = (
                 SELECT id
                 FROM closing_batches
                 WHERE company_code = %s
                   AND fiscal_year = %s
                   AND period = %s
                   AND ledger = %s
-                  AND batch_type IN ('TB_POST', 'CLOSE_PNL')
+                  AND batch_type = 'TB_POST'
                   AND status = 'POSTED'
+                ORDER BY posted_at DESC
+                LIMIT 1
             )
         """, (company, fiscal_year, period, ledger))
 
@@ -1299,7 +1301,7 @@ def open_new_fiscal_year(payload: dict, conn=Depends(get_db)):
                     debit, credit, balance,
                     currency, source_type, source_reference
                 )
-                VALUES (%s, %s, %s,
+                VALUES (%s, %s, %s,AND batch_type IN ('TB_POST', 'CLOSE_PNL')
                         %s, %s, %s,
                         %s, 'OPEN', 'CARRY')
             """, (

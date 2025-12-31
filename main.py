@@ -37,6 +37,7 @@ from routers.accounting import router as accounting_router
 from routers.accounting_adjustments import router as accounting_adjustments_router
 from routers.closing import router as closing_router
 from routers.closing_reports import router as closing_reports_router
+from routers.closing_status import router as closing_status_router
 
 
 from routers.exchange_rate import router as exchange_rate_router
@@ -136,6 +137,7 @@ app.include_router(accounting_router)
 app.include_router(accounting_adjustments_router)
 app.include_router(closing_router)
 app.include_router(closing_reports_router)
+app.include_router(closing_status_router)
 
 app.include_router(exchange_rate_router)
 

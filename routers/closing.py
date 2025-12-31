@@ -4,6 +4,9 @@ from typing import List, Dict, Any
 from datetime import date, datetime
 from calendar import monthrange
 from typing import Dict
+from fastapi import Depends
+from security.auth import get_current_user
+
 
 from database import get_db
 

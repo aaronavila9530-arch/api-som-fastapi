@@ -534,52 +534,49 @@ def reverse_closing_batch(
 @router.post("/tb/preview")
 def preview_trial_balance(payload: dict, conn=Depends(get_db)):
     """
-    Preview del Balance de Comprobación basado en GL_CLOSING.
+    Preview del Balance de Comprobación basado en el
+    ÚLTIMO GL_CLOSING posteado.
 
     Payload esperado:
     {
-        company_code: "MSL-CR",
-        fiscal_year: 2025,
-        period: 12,
-        ledger: "0L"
+        company_code: "MSL MARINE SURVEYORS AND LOGISTICS GROUP SRL",
+        ledger: "0L"        # opcional
     }
     """
 
-    required_fields = ["company_code", "fiscal_year", "period"]
-
-    for f in required_fields:
-        if f not in payload:
-            raise HTTPException(400, f"Missing field: {f}")
-
-    company = payload["company_code"]
-    fiscal_year = payload["fiscal_year"]
-    period = payload["period"]
+    company = payload.get("company_code")
     ledger = payload.get("ledger", "0L")
+
+    if not company:
+        raise HTTPException(400, "Missing field: company_code")
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     # ----------------------------------------------------
-    # 1️⃣ Obtener batch GL_CLOSING POSTED
+    # 1️⃣ Obtener ÚLTIMO GL_CLOSING POSTED
     # ----------------------------------------------------
     cur.execute("""
-        SELECT id, batch_code
+        SELECT
+            id,
+            batch_code,
+            fiscal_year,
+            period,
+            ledger
         FROM closing_batches
         WHERE company_code = %s
-          AND fiscal_year = %s
-          AND period = %s
           AND ledger = %s
           AND batch_type = 'GL_CLOSING'
           AND status = 'POSTED'
-        ORDER BY posted_at DESC
+        ORDER BY fiscal_year DESC, period DESC, posted_at DESC
         LIMIT 1
-    """, (company, fiscal_year, period, ledger))
+    """, (company, ledger))
 
     gl_batch = cur.fetchone()
 
     if not gl_batch:
         raise HTTPException(
             404,
-            "No existe un cierre de Libro Mayor posteado para este período."
+            "No existe un cierre de Libro Mayor posteado."
         )
 
     # ----------------------------------------------------
@@ -612,7 +609,7 @@ def preview_trial_balance(payload: dict, conn=Depends(get_db)):
     total_credit = sum(r["credit"] for r in rows)
     difference = round(total_debit - total_credit, 2)
 
-    response = {
+    return {
         "source_batch": {
             "batch_id": gl_batch["id"],
             "batch_code": gl_batch["batch_code"],
@@ -620,9 +617,9 @@ def preview_trial_balance(payload: dict, conn=Depends(get_db)):
         },
 
         "company_code": company,
-        "fiscal_year": fiscal_year,
-        "period": period,
-        "ledger": ledger,
+        "fiscal_year": gl_batch["fiscal_year"],
+        "period": gl_batch["period"],
+        "ledger": gl_batch["ledger"],
 
         "totals": {
             "debit": float(total_debit),
@@ -644,8 +641,6 @@ def preview_trial_balance(payload: dict, conn=Depends(get_db)):
         ]
     }
 
-    return response
-
 
 # ============================================================
 # POST /closing/tb/post
@@ -662,7 +657,7 @@ def post_trial_balance(
 
     Payload esperado:
     {
-        company_code: "MSL-CR",
+        company_code: "MSL MARINE SURVEYORS AND LOGISTICS GROUP SRL",
         posted_by: "<usuario_logeado>"
     }
     """
@@ -1283,84 +1278,81 @@ def post_financial_statements(payload: dict, conn=Depends(get_db)):
 
 # ============================================================
 # POST /closing/fy/open
-# Apertura de nuevo ejercicio fiscal (carryforward)
+# Apertura automática de nuevo ejercicio fiscal (carryforward)
 # ============================================================
 
 @router.post("/fy/open")
-def open_new_fiscal_year(payload: dict, conn=Depends(get_db)):
+def open_new_fiscal_year(
+    payload: dict,
+    conn=Depends(get_db),
+    current_user=Depends(get_current_user)  # 👈 usuario logeado
+):
     """
-    Apertura de nuevo ejercicio fiscal.
+    Apertura automática de nuevo ejercicio fiscal.
 
     Payload esperado:
     {
         company_code: "MSL MARINE SURVEYORS AND LOGISTICS GROUP SRL",
-        fiscal_year: 2026,
-        source_fiscal_year: 2025,
-        ledger: "0L",
-        posted_by: "aaron.avila"
+        ledger: "0L"   # opcional
     }
     """
 
-    required_fields = [
-        "company_code",
-        "fiscal_year",
-        "source_fiscal_year",
-        "posted_by"
-    ]
-
-    for f in required_fields:
-        if f not in payload:
-            raise HTTPException(400, f"Missing field: {f}")
-
-    company = payload["company_code"]
-    new_year = payload["fiscal_year"]
-    source_year = payload["source_fiscal_year"]
+    company = payload.get("company_code")
     ledger = payload.get("ledger", "0L")
-    posted_by = payload["posted_by"]
+
+    if not company:
+        raise HTTPException(400, "Missing field: company_code")
+
+    posted_by = current_user["usuario"]
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
         # ----------------------------------------------------
-        # 1️⃣ Validar cierre previo
+        # 1️⃣ Detectar último ejercicio cerrado (FS_FINAL)
         # ----------------------------------------------------
         cur.execute("""
-            SELECT *
+            SELECT
+                cb.id            AS fs_batch_id,
+                cb.fiscal_year   AS source_year
+            FROM closing_batches cb
+            WHERE cb.company_code = %s
+              AND cb.ledger = %s
+              AND cb.batch_type = 'FS_FINAL'
+              AND cb.status = 'POSTED'
+            ORDER BY cb.fiscal_year DESC, cb.posted_at DESC
+            LIMIT 1
+            FOR UPDATE
+        """, (company, ledger))
+
+        fs = cur.fetchone()
+
+        if not fs:
+            raise HTTPException(
+                400,
+                "No existe un ejercicio fiscal cerrado (FS_FINAL)."
+            )
+
+        source_year = fs["source_year"]
+        new_year = source_year + 1
+
+        # ----------------------------------------------------
+        # 2️⃣ Validar que el nuevo ejercicio no exista
+        # ----------------------------------------------------
+        cur.execute("""
+            SELECT 1
             FROM closing_status
             WHERE company_code = %s
               AND fiscal_year = %s
               AND ledger = %s
-            ORDER BY period DESC
             LIMIT 1
-            FOR UPDATE
-        """, (company, source_year, ledger))
+        """, (company, new_year, ledger))
 
-        status = cur.fetchone()
-
-        if not status or not status["fs_closed"]:
+        if cur.fetchone():
             raise HTTPException(
-                400,
-                "Estados Financieros no están cerrados. No se puede abrir nuevo ejercicio."
+                409,
+                f"El ejercicio fiscal {new_year} ya existe."
             )
-
-        # ----------------------------------------------------
-        # 2️⃣ Obtener FS_FINAL
-        # ----------------------------------------------------
-        cur.execute("""
-            SELECT id
-            FROM closing_batches
-            WHERE company_code = %s
-              AND fiscal_year = %s
-              AND batch_type = 'FS_FINAL'
-              AND status = 'POSTED'
-            ORDER BY posted_at DESC
-            LIMIT 1
-        """, (company, source_year))
-
-        fs_batch = cur.fetchone()
-
-        if not fs_batch:
-            raise HTTPException(404, "FS_FINAL no encontrado.")
 
         # ----------------------------------------------------
         # 3️⃣ Crear batch OPEN_FY
@@ -1369,58 +1361,107 @@ def open_new_fiscal_year(payload: dict, conn=Depends(get_db)):
 
         cur.execute("""
             INSERT INTO closing_batches (
-                batch_code, batch_type, company_code,
-                fiscal_year, period, ledger,
-                status, source_batch_id,
-                description, posted_at, posted_by
+                batch_code,
+                batch_type,
+                company_code,
+                fiscal_year,
+                period,
+                ledger,
+                status,
+                source_batch_id,
+                description,
+                posted_at,
+                posted_by
             )
-            VALUES (%s, 'OPEN_FY', %s, %s, 1, %s,
-                    'POSTED', %s, %s, NOW(), %s)
+            VALUES (
+                %s, 'OPEN_FY', %s,
+                %s, 1, %s,
+                'POSTED', %s,
+                %s, NOW(), %s
+            )
             RETURNING id
         """, (
             batch_code,
             company,
             new_year,
             ledger,
-            fs_batch["id"],
-            f"Apertura ejercicio {new_year}",
+            fs["fs_batch_id"],
+            f"Apertura ejercicio fiscal {new_year}",
             posted_by
         ))
 
         open_batch_id = cur.fetchone()["id"]
 
         # ----------------------------------------------------
-        # 4️⃣ Carryforward cuentas balance
+        # 4️⃣ Carryforward cuentas de balance (1,2,3)
         # ----------------------------------------------------
         cur.execute("""
             SELECT
-                account_code, account_name, balance, currency
+                account_code,
+                account_name,
+                balance,
+                currency
             FROM closing_batch_lines
             WHERE batch_id = %s
-              AND (account_code LIKE '1%%'
-               OR account_code LIKE '2%%'
-               OR account_code LIKE '3%%')
-        """, (fs_batch["id"],))
+              AND (
+                    account_code LIKE '1%%'
+                 OR account_code LIKE '2%%'
+                 OR account_code LIKE '3%%'
+              )
+        """, (fs["fs_batch_id"],))
 
         for r in cur.fetchall():
+            debit = r["balance"] if r["balance"] > 0 else 0
+            credit = abs(r["balance"]) if r["balance"] < 0 else 0
+
             cur.execute("""
                 INSERT INTO closing_batch_lines (
-                    batch_id, account_code, account_name,
-                    debit, credit, balance,
-                    currency, source_type, source_reference
+                    batch_id,
+                    account_code,
+                    account_name,
+                    debit,
+                    credit,
+                    balance,
+                    currency,
+                    source_type,
+                    source_reference
                 )
-                VALUES (%s, %s, %s,AND batch_type IN ('TB_POST', 'CLOSE_PNL')
-                        %s, %s, %s,
-                        %s, 'OPEN', 'CARRY')
+                VALUES (
+                    %s, %s, %s,
+                    %s, %s, %s,
+                    %s, 'OPEN', 'CARRY'
+                )
             """, (
                 open_batch_id,
                 r["account_code"],
                 r["account_name"],
-                r["balance"] if r["balance"] > 0 else 0,
-                abs(r["balance"]) if r["balance"] < 0 else 0,
+                debit,
+                credit,
                 r["balance"],
                 r["currency"]
             ))
+
+        # ----------------------------------------------------
+        # 5️⃣ Crear closing_status del nuevo ejercicio
+        # ----------------------------------------------------
+        cur.execute("""
+            INSERT INTO closing_status (
+                company_code,
+                fiscal_year,
+                period,
+                ledger,
+                fy_opened,
+                created_at,
+                updated_at,
+                closed_by
+            )
+            VALUES (%s, %s, 1, %s, TRUE, NOW(), NOW(), %s)
+        """, (
+            company,
+            new_year,
+            ledger,
+            posted_by
+        ))
 
         conn.commit()
 
@@ -1428,12 +1469,18 @@ def open_new_fiscal_year(payload: dict, conn=Depends(get_db)):
             "message": "Nuevo ejercicio fiscal abierto correctamente.",
             "batch_id": open_batch_id,
             "batch_code": batch_code,
-            "new_fiscal_year": new_year
+            "source_fiscal_year": source_year,
+            "new_fiscal_year": new_year,
+            "opened_by": posted_by
         }
 
     except HTTPException:
         conn.rollback()
         raise
+
     except Exception as e:
         conn.rollback()
-        raise HTTPException(500, f"Error abriendo ejercicio fiscal: {e}")
+        raise HTTPException(
+            500,
+            f"Error abriendo ejercicio fiscal: {e}"
+        )

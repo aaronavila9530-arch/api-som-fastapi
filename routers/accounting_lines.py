@@ -1,6 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException
 from psycopg2.extras import RealDictCursor
-from typing import List
 
 from database import get_db
 
@@ -14,13 +13,12 @@ router = APIRouter(
 # Libro Diario – líneas contables REALES
 # ============================================================
 @router.get("")
-def get_accounting_lines(
-    company_code: str = Query(...),
-    conn=Depends(get_db)
-):
+def get_accounting_lines(conn=Depends(get_db)):
     """
     Retorna líneas contables DIRECTAMENTE desde accounting_lines.
-    NO agrupa, NO calcula, NO inventa fechas.
+    NO agrupa
+    NO calcula
+    NO inventa
     """
 
     if not conn:
@@ -38,27 +36,15 @@ def get_accounting_lines(
                 al.debit,
                 al.credit,
                 al.line_description,
-                al.created_at,
-
-                ae.origin,
-                ae.fiscal_year,
-                ae.period
-
+                al.created_at
             FROM accounting_lines al
-            JOIN accounting_entries ae
-              ON ae.id = al.entry_id
-
-            WHERE ae.company_code = %s
-
             ORDER BY
-                ae.fiscal_year,
-                ae.period,
+                al.created_at,
                 al.entry_id,
                 al.id
-        """, (company_code,))
+        """)
 
-        rows = cur.fetchall()
-        return rows
+        return cur.fetchall()
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -550,72 +550,88 @@ def get_accounting_ledger(
 
 @router.get("/iva")
 def get_accounting_iva(
-    period: str,  # YYYY-MM
+    period: str,   # 'YYYY-MM'
     conn=Depends(get_db)
 ):
     """
-    IVA ERP-SOM
-    Fuente única: accounting_lines
+    IVA ERP-SOM – DEFINITIVO
+
+    Fuente ÚNICA: accounting_lines
+    Periodo = DATE_TRUNC('month', created_at)
+    Arrastra saldo a favor SOLO si existe
     """
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        # -------------------------------
+        # -------------------------------------------------
         # Helper IVA por periodo
-        # -------------------------------
-        def iva_por_periodo(p):
+        # -------------------------------------------------
+        def iva_por_periodo(year: int, month: int):
             cur.execute("""
                 SELECT
-                    COALESCE(SUM(
+                    SUM(
                         CASE
                             WHEN account_name ILIKE '%IVA por pagar%'
-                            THEN credit - debit
+                            THEN COALESCE(credit,0) - COALESCE(debit,0)
                             ELSE 0
                         END
-                    ), 0) AS iva_por_pagar,
+                    ) AS iva_por_pagar,
 
-                    COALESCE(SUM(
+                    SUM(
                         CASE
-                            WHEN account_name ILIKE '%IVA crédito fiscal%'
-                            THEN debit - credit
+                            WHEN account_name ILIKE '%IVA crédito%'
+                            THEN COALESCE(debit,0) - COALESCE(credit,0)
                             ELSE 0
                         END
-                    ), 0) AS iva_credito
+                    ) AS iva_credito
                 FROM accounting_lines
-                WHERE LEFT(created_at::text, 7) = %s
-            """, (p,))
-            row = cur.fetchone()
-            return float(row["iva_por_pagar"]), float(row["iva_credito"])
+                WHERE
+                    DATE_TRUNC('month', created_at)
+                    = DATE_TRUNC('month', %s::date)
+            """, (f"{year}-{month:02d}-01",))
 
-        # -------------------------------
-        # 1️⃣ IVA DEL MES ACTUAL
-        # -------------------------------
-        iva_pagar, iva_credito = iva_por_periodo(period)
+            row = cur.fetchone() or {}
+            return (
+                float(row.get("iva_por_pagar") or 0),
+                float(row.get("iva_credito") or 0)
+            )
 
-        # -------------------------------
-        # 2️⃣ PERIODO ANTERIOR
-        # -------------------------------
+        # -------------------------------------------------
+        # Periodo actual
+        # -------------------------------------------------
         year, month = map(int, period.split("-"))
-        prev_period = f"{year-1}-12" if month == 1 else f"{year}-{month-1:02d}"
+        iva_por_pagar, iva_credito = iva_por_periodo(year, month)
 
-        prev_pagar, prev_credito = iva_por_periodo(prev_period)
+        # -------------------------------------------------
+        # Periodo anterior
+        # -------------------------------------------------
+        if month == 1:
+            prev_year, prev_month = year - 1, 12
+        else:
+            prev_year, prev_month = year, month - 1
 
-        # -------------------------------
-        # 3️⃣ SALDO A FAVOR (SI EXISTE)
-        # -------------------------------
-        saldo_favor = max(prev_credito - prev_pagar, 0)
+        prev_pagar, prev_credito = iva_por_periodo(prev_year, prev_month)
 
-        # -------------------------------
-        # 4️⃣ IVA FINAL
-        # -------------------------------
-        iva_total = iva_pagar - iva_credito - saldo_favor
+        # -------------------------------------------------
+        # Saldo a favor (solo si existe)
+        # -------------------------------------------------
+        saldo_favor_anterior = (
+            prev_credito - prev_pagar
+            if prev_credito > prev_pagar
+            else 0.0
+        )
+
+        # -------------------------------------------------
+        # IVA FINAL
+        # -------------------------------------------------
+        iva_total = iva_por_pagar - iva_credito - saldo_favor_anterior
 
         return {
             "period": period,
-            "iva_por_pagar": round(iva_pagar, 2),
+            "iva_por_pagar": round(iva_por_pagar, 2),
             "iva_credito": round(iva_credito, 2),
-            "saldo_favor_anterior": round(saldo_favor, 2),
+            "saldo_favor_anterior": round(saldo_favor_anterior, 2),
             "iva_total": round(iva_total, 2)
         }
 

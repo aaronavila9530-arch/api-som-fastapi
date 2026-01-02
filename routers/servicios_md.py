@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Header
 import database
 
-from backend_api.rbac_service import has_permission
+from rbac_service import has_permission
 
 router = APIRouter(prefix="/servicios_md", tags=["ServiciosMD"])
 

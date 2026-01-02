@@ -11,7 +11,7 @@ import tempfile
 
 from database import get_db
 from reports.pdf_closing_report import generate_closing_batch_pdf
-from backend_api.rbac_service import has_permission
+from rbac_service import has_permission
 
 
 router = APIRouter(

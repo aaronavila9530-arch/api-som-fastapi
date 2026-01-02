@@ -19,7 +19,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import xml.etree.ElementTree as ET
 
 from database import get_db
-from backend_api.rbac_service import has_permission
+from rbac_service import has_permission
 
 
 router = APIRouter(

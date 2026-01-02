@@ -8,7 +8,7 @@ from typing import Optional
 from datetime import datetime
 
 from database import get_db
-from backend_api.rbac_service import has_permission
+from rbac_service import has_permission
 
 )
 

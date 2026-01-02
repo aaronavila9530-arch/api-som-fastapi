@@ -9,7 +9,7 @@ from psycopg2.extras import RealDictCursor
 from datetime import date
 
 from database import get_db
-from backend_api.rbac_service import has_permission
+from rbac_service import has_permission
 
 
 router = APIRouter(

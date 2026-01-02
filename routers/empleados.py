@@ -1,8 +1,25 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel
 import database
 
+from backend_api.rbac_service import has_permission
+
 router = APIRouter(prefix="/empleados", tags=["Empleados"])
+
+
+# ============================================================
+# RBAC — GUARD (UNA SOLA VEZ POR ROUTER)
+# ============================================================
+def require_permission(module: str, action: str):
+    def checker(
+        x_user_role: str = Header(..., alias="X-User-Role")
+    ):
+        if not has_permission(x_user_role, module, action):
+            raise HTTPException(
+                status_code=403,
+                detail="No autorizado"
+            )
+    return checker
 
 
 

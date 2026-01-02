@@ -1,14 +1,30 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
-from database import get_db
-import os
 from fastapi.responses import FileResponse
+import os
+
+from database import get_db
+from backend_api.rbac_service import has_permission
 
 router = APIRouter(
     prefix="/factura",
     tags=["Facturación"]
 )
+
+# ============================================================
+# RBAC GUARD
+# ============================================================
+def require_permission(module: str, action: str):
+    def checker(
+        x_user_role: str = Header(..., alias="X-User-Role")
+    ):
+        if not has_permission(x_user_role, module, action):
+            raise HTTPException(
+                status_code=403,
+                detail="No autorizado"
+            )
+    return checker
 
 
 # ============================================================

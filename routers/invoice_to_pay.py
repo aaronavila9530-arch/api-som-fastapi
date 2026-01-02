@@ -1,21 +1,41 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Header,
+    UploadFile,
+    File,
+    Form
+)
 from psycopg2.extras import RealDictCursor
-from datetime import date
+from datetime import date, datetime
 from typing import Optional
-
-
 import os
 import shutil
-from fastapi import UploadFile, File, Form
-from datetime import datetime
-
 
 from database import get_db
+from backend_api.rbac_service import has_permission
+
 
 router = APIRouter(
     prefix="/invoice-to-pay",
     tags=["Finance - Invoice to Pay"]
 )
+
+# ============================================================
+# RBAC GUARD
+# ============================================================
+def require_permission(module: str, action: str):
+    def checker(
+        x_user_role: str = Header(..., alias="X-User-Role")
+    ):
+        if not has_permission(x_user_role, module, action):
+            raise HTTPException(
+                status_code=403,
+                detail="No autorizado"
+            )
+    return checker
 
 # ============================================================
 # 🔁 SYNC SERVICIOS → PAYMENT OBLIGATIONS

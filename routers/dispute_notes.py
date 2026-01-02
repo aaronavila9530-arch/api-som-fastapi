@@ -3,7 +3,14 @@
 # CÁLCULOS FINANCIEROS BLINDADOS CON DECIMAL
 # ============================================================
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    UploadFile,
+    File,
+    Header
+)
 from psycopg2.extras import RealDictCursor
 from psycopg2 import sql
 from datetime import datetime, date
@@ -12,11 +19,28 @@ from decimal import Decimal, ROUND_HALF_UP
 import xml.etree.ElementTree as ET
 
 from database import get_db
+from backend_api.rbac_service import has_permission
+
 
 router = APIRouter(
     prefix="/dispute-management",
     tags=["Disputes - Notes (NC/ND)"]
 )
+
+# ============================================================
+# RBAC GUARD
+# ============================================================
+def require_permission(module: str, action: str):
+    def checker(
+        x_user_role: str = Header(..., alias="X-User-Role")
+    ):
+        if not has_permission(x_user_role, module, action):
+            raise HTTPException(
+                status_code=403,
+                detail="No autorizado"
+            )
+    return checker
+
 
 # ============================================================
 # UTILIDADES FINANCIERAS

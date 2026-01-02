@@ -1,16 +1,36 @@
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    Header
+)
 from psycopg2.extras import RealDictCursor
 from typing import Optional
 from datetime import date, timedelta
 
-
 from database import get_db
+from backend_api.rbac_service import has_permission
+
 
 router = APIRouter(
     prefix="/collections",
     tags=["Collections"]
 )
 
+# ============================================================
+# RBAC GUARD
+# ============================================================
+def require_permission(module: str, action: str):
+    def checker(
+        x_user_role: str = Header(..., alias="X-User-Role")
+    ):
+        if not has_permission(x_user_role, module, action):
+            raise HTTPException(
+                status_code=403,
+                detail="No autorizado"
+            )
+    return checker
 
 # ============================================================
 # Helpers

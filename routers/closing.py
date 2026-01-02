@@ -1,19 +1,36 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Header
+)
 from psycopg2.extras import RealDictCursor
 from typing import List, Dict, Any
 from datetime import date, datetime
 from calendar import monthrange
-from typing import Dict
-from fastapi import Depends
-from security.auth import get_current_user
-
 
 from database import get_db
+from backend_api.rbac_service import has_permission
+
 
 router = APIRouter(
     prefix="/closing",
     tags=["Closing – Cierre Contable"]
 )
+
+# ============================================================
+# RBAC GUARD
+# ============================================================
+def require_permission(module: str, action: str):
+    def checker(
+        x_user_role: str = Header(..., alias="X-User-Role")
+    ):
+        if not has_permission(x_user_role, module, action):
+            raise HTTPException(
+                status_code=403,
+                detail="No autorizado"
+            )
+    return checker
 
 
 @router.post("/period/close")

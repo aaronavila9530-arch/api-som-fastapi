@@ -12,35 +12,36 @@ import database
 # Routers
 # ============================================================
 
-from .routers.empleados import router as empleados_router
-from .routers.surveyores import router as surveyores_router
-from .routers.clientes import router as clientes_router
-from .routers.proveedores import router as proveedores_router
-from .routers.servicios_md import router as servicios_md_router
-from .routers.servicios_op import router as servicios_router
-from .routers.continentes_paises_puertos import router as cpp_router
-from .routers.version import router as version_router
-from .routers.cliente_credito import router as cliente_credito_router
-from .routers.factura import router as factura_router
-from .routers.invoicing import router as invoicing_router
-from .routers.billing import router as billing_router
-from .routers.collections import router as collections_router
-from .routers.bank_reconciliation import router as bank_reconciliation_router
-from .routers.incoming_payments import router as incoming_payments_router
-from .routers.dispute_management import router as dispute_management_router
-from .routers.dispute_notes import router as dispute_notes_router
-from .routers.disputa import router as disputa_router
-from .routers.invoice_to_pay import router as invoice_to_pay_router
+from routers.empleados import router as empleados_router
+from routers.surveyores import router as surveyores_router
+from routers.clientes import router as clientes_router
+from routers.proveedores import router as proveedores_router
+from routers.servicios_md import router as servicios_md_router
+from routers.servicios_op import router as servicios_router
+from routers.continentes_paises_puertos import router as cpp_router
+from routers.version import router as version_router
+from routers.cliente_credito import router as cliente_credito_router
+from routers.factura import router as factura_router
+from routers.invoicing import router as invoicing_router
+from routers.billing import router as billing_router
+from routers.collections import router as collections_router
+from routers.bank_reconciliation import router as bank_reconciliation_router
+from routers.incoming_payments import router as incoming_payments_router
+from routers.dispute_management import router as dispute_management_router
+from routers.dispute_notes import router as dispute_notes_router
+from routers.disputa import router as disputa_router
+from routers.invoice_to_pay import router as invoice_to_pay_router
 
 # Accounting
-from .routers.accounting import router as accounting_router
-from .routers.accounting_adjustments import router as accounting_adjustments_router
-from .routers.closing import router as closing_router
-from .routers.closing_reports import router as closing_reports_router
-from .routers.closing_status import router as closing_status_router
-from .routers.accounting_lines import router as accounting_lines_router
+from routers.accounting import router as accounting_router
+from routers.accounting_adjustments import router as accounting_adjustments_router
+from routers.closing import router as closing_router
+from routers.closing_reports import router as closing_reports_router
+from routers.closing_status import router as closing_status_router
+from routers.accounting_lines import router as accounting_lines_router
 
-from .routers.exchange_rate import router as exchange_rate_router
+from routers.exchange_rate import router as exchange_rate_router
+
 
 # ============================================================
 # CONFIGURACIÓN FASTAPI

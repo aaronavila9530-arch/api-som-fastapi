@@ -10,11 +10,19 @@ from datetime import datetime
 from database import get_db
 from rbac_service import has_permission
 
+# ============================================================
+# ROUTER
+# ============================================================
+
+router = APIRouter(
+    prefix="/dispute-management",
+    tags=["Dispute Management"]
 )
 
 # ============================================================
 # RBAC GUARD
 # ============================================================
+
 def require_permission(module: str, action: str):
     def checker(
         x_user_role: str = Header(..., alias="X-User-Role")
@@ -29,6 +37,7 @@ def require_permission(module: str, action: str):
 # ============================================================
 # CONSTANTES
 # ============================================================
+
 
 DISPUTE_STATUSES = [
     "New",

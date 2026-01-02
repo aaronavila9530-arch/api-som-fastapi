@@ -44,24 +44,30 @@ def get_servicios_facturables(
     try:
         cur.execute("""
             SELECT
-                consec,
-                num_informe,
-                buque_contenedor,
-                operacion,
-                fecha_inicio,
-                fecha_fin,
-                cliente,
-                detalle,
-                terminos_pago,
-                honorarios,
-                factura
-            FROM servicios
+                s.consec,
+                s.tipo,
+                s.estado,
+                s.num_informe,
+                s.detalle,
+                s.cliente,
+                s.continente,
+                s.pais,
+                s.puerto,
+                s.operacion,
+                s.fecha_inicio,
+                s.hora_inicio,
+                s.fecha_fin,
+                s.hora_fin,
+                s.demoras,
+                s.duracion,
+                s.factura
+            FROM servicios s
             WHERE
-                cliente = %s
-                AND estado = 'Finalizado'
-                AND num_informe IS NOT NULL
-                AND factura IS NULL
-            ORDER BY fecha_inicio
+                s.cliente = %s
+                AND s.estado = 'Finalizado'
+                AND s.num_informe IS NOT NULL
+                AND s.factura IS NULL
+            ORDER BY s.fecha_inicio
         """, (cliente,))
 
         data = cur.fetchall()

@@ -627,3 +627,82 @@ def emitir_nota_credito(
     finally:
         cur.close()
 
+@router.post("/emitir-xml")
+def emitir_factura_xml_servicio(
+    payload: dict,
+    conn=Depends(get_db)
+):
+    """
+    payload esperado:
+    {
+        servicio_id,
+        codigo_cliente,
+        nombre_cliente,
+        xml_path
+    }
+    """
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        xml_path = payload.get("xml_path")
+        servicio_id = payload.get("servicio_id")
+
+        if not xml_path or not servicio_id:
+            raise HTTPException(400, "Datos incompletos")
+
+        from services.factura_electronica_parser import parse_factura_electronica
+        data = parse_factura_electronica(xml_path)
+
+        cur.execute("""
+            INSERT INTO invoicing (
+                factura_id,
+                tipo_factura,
+                tipo_documento,
+                numero_documento,
+                codigo_cliente,
+                nombre_cliente,
+                fecha_emision,
+                moneda,
+                total,
+                estado,
+                created_at
+            )
+            VALUES (
+                %s,
+                'ELECTRONICA',
+                'FACTURA',
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                'EMITIDA',
+                NOW()
+            )
+        """, (
+            servicio_id,
+            data["numero_factura"],
+            payload["codigo_cliente"],
+            payload["nombre_cliente"],
+            data["fecha_emision"],
+            data["moneda"],
+            data["total"]
+        ))
+
+        cur.execute("""
+            UPDATE servicios
+            SET factura = %s
+            WHERE consec = %s
+        """, (data["numero_factura"], servicio_id))
+
+        conn.commit()
+        return {"status": "ok"}
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(500, str(e))
+    finally:
+        cur.close()
+

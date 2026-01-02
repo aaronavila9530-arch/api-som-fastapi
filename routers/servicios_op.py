@@ -248,14 +248,34 @@ def confirmar_servicio(consec: int, data: dict):
 @router.put("/demoras/{consec}")
 def actualizar_demoras(consec: int, payload: DemoraUpdate):
 
-    total = payload.total
-
     try:
         database.sql(
-            "UPDATE servicios SET demoras = %s WHERE consec = %s",
-            (total, consec)
+            """
+            UPDATE servicios
+            SET
+                demoras = %(d)s,
+                duracion = (
+                    EXTRACT(EPOCH FROM (
+                        (fecha_fin::date + hora_fin::time)
+                        -
+                        (fecha_inicio::date + hora_inicio::time)
+                    )) / 60
+                    - COALESCE(%(d)s, 0)
+                )
+            WHERE consec = %(c)s
+              AND fecha_fin IS NOT NULL
+              AND hora_fin IS NOT NULL
+            """,
+            {
+                "d": payload.total,
+                "c": consec
+            }
         )
-        return {"status": "ok", "msg": "Demoras actualizadas", "total": total}
+
+        return {
+            "status": "ok",
+            "msg": "Demoras y duración actualizadas"
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -313,8 +333,17 @@ def cerrar_operacion(consec: int, data: dict):
         database.sql(
             """
             UPDATE servicios
-            SET fecha_fin = %(f)s,
-                hora_fin  = %(h)s
+            SET
+                fecha_fin = %(f)s,
+                hora_fin  = %(h)s,
+                duracion = (
+                    EXTRACT(EPOCH FROM (
+                        (%(f)s::date + %(h)s::time)
+                        -
+                        (fecha_inicio::date + hora_inicio::time)
+                    )) / 60
+                    - COALESCE(demoras, 0)
+                )
             WHERE consec = %(c)s
             """,
             {
@@ -327,7 +356,8 @@ def cerrar_operacion(consec: int, data: dict):
         return {
             "status": "ok",
             "fecha_fin": fecha_fin,
-            "hora_fin": hora_fin
+            "hora_fin": hora_fin,
+            "msg": "Operación cerrada y duración calculada"
         }
 
     except Exception as e:

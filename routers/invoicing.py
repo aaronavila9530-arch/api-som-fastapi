@@ -46,7 +46,7 @@ def get_servicios_facturables(
             SELECT
                 s.consec,
                 s.tipo,
-                s.estado,
+                s.buque_contenedor,
                 s.num_informe,
                 s.detalle,
                 s.cliente,

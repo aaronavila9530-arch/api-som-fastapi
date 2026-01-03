@@ -442,9 +442,6 @@ def crear_factura_electronica(
         cur.close()
 
 
-# ============================================================
-# CREAR FACTURA MANUAL ANTICIPADA
-# ============================================================
 @router.post("/manual/anticipada")
 def crear_factura_manual_anticipada(payload: dict, conn=Depends(get_db)):
 
@@ -454,130 +451,61 @@ def crear_factura_manual_anticipada(payload: dict, conn=Depends(get_db)):
 
     try:
         servicio_id = payload.get("servicio_id")
-        total = payload.get("total")
+        total = float(payload.get("total", 0))
 
         if not servicio_id:
-            raise HTTPException(status_code=400, detail="Servicio requerido")
+            raise HTTPException(400, "Servicio requerido")
 
-        if total in (None, ""):
-            raise HTTPException(status_code=400, detail="Total requerido")
+        if total <= 0:
+            raise HTTPException(400, "Total inválido")
 
-        # ====================================================
-        # OBTENER SERVICIO (SIN VALIDAR SI YA ESTÁ FACTURADO)
-        # ====================================================
-        cur.execute("""
-            SELECT *
-            FROM servicios
-            WHERE consec = %s
-        """, (servicio_id,))
+        # ================= SERVICIO =================
+        cur.execute("SELECT * FROM servicios WHERE consec = %s", (servicio_id,))
         servicio = cur.fetchone()
-
         if not servicio:
-            raise HTTPException(status_code=404, detail="Servicio no encontrado")
+            raise HTTPException(404, "Servicio no encontrado")
 
-        # ====================================================
-        # RESOLVER CLIENTE
-        # ====================================================
+        # ================= CLIENTE =================
         cur.execute("""
-            SELECT codigo
-            FROM cliente
-            WHERE nombrecomercial = %s
-               OR nombrejuridico = %s
+            SELECT c.codigo, c.nombrecomercial
+            FROM cliente c
+            WHERE c.nombrecomercial = %s OR c.nombrejuridico = %s
         """, (servicio["cliente"], servicio["cliente"]))
         cliente = cur.fetchone()
-
         if not cliente:
-            raise HTTPException(status_code=400, detail="Cliente no encontrado")
+            raise HTTPException(400, "Cliente no encontrado")
 
-        codigo_cliente = cliente["codigo"]
-
-        # ====================================================
-        # TÉRMINO DE PAGO
-        # ====================================================
+        # ================= TÉRMINO PAGO =================
         cur.execute("""
             SELECT termino_pago
             FROM cliente_credito
             WHERE codigo_cliente = %s
-        """, (codigo_cliente,))
+        """, (cliente["codigo"],))
         credito = cur.fetchone()
-
         if not credito:
-            raise HTTPException(status_code=400, detail="Cliente sin crédito")
+            raise HTTPException(400, "Cliente sin crédito")
 
         termino_pago = int(credito["termino_pago"])
 
-        # ====================================================
-        # NÚMERO FACTURA (ANTICIPADA)
-        # ====================================================
+        # ================= CONSECUTIVO =================
         cur.execute("""
-            SELECT COALESCE(MAX(numero_factura::int), 999) AS ultimo
-            FROM factura
-            WHERE tipo_factura = 'ANTICIPADA_MANUAL'
+            SELECT COALESCE(MAX(numero_documento::int), 2200) AS ultimo
+            FROM invoicing
+            WHERE tipo_documento = 'FACTURA'
         """)
-        ultimo = cur.fetchone()["ultimo"]
-        numero_factura = ultimo + 1
+        numero_factura = int(cur.fetchone()["ultimo"]) + 1
 
-        fecha_factura = datetime.now()
+        fecha_emision = date.today()
 
-        # ====================================================
-        # INSERT FACTURA
-        # ====================================================
-        cur.execute("""
-            INSERT INTO factura (
-                tipo_factura,
-                numero_factura,
-                codigo_cliente,
-                fecha_emision,
-                termino_pago,
-                moneda,
-                total
-            )
-            VALUES (
-                'ANTICIPADA_MANUAL',
-                %s, %s, %s, %s, %s, %s
-            )
-            RETURNING id
-        """, (
-            numero_factura,
-            codigo_cliente,
-            fecha_factura,
-            termino_pago,
-            payload.get("moneda", "USD"),
-            total
-        ))
-
-        factura_id = cur.fetchone()["id"]
-
-        # ====================================================
-        # DETALLE
-        # ====================================================
-        cur.execute("""
-            INSERT INTO factura_detalle (
-                factura_id,
-                descripcion,
-                cantidad,
-                precio_unitario,
-                total_linea
-            )
-            VALUES (%s, %s, 1, %s, %s)
-        """, (
-            factura_id,
-            payload.get("descripcion"),
-            total,
-            total
-        ))
-
-        # ====================================================
-        # PDF
-        # ====================================================
+        # ================= PDF =================
         pdf_data = {
             "numero_factura": numero_factura,
-            "fecha_factura": fecha_factura,
-            "cliente": servicio["cliente"],
-            "buque": servicio["buque_contenedor"],
-            "operacion": servicio["operacion"],
-            "num_informe": servicio["num_informe"],
-            "periodo": f"{servicio['fecha_inicio']} a {servicio['fecha_fin']}",
+            "fecha_factura": fecha_emision,
+            "cliente": cliente["nombrecomercial"],
+            "buque": servicio.get("buque_contenedor"),
+            "operacion": servicio.get("operacion"),
+            "num_informe": servicio.get("num_informe"),
+            "periodo": f"{servicio.get('fecha_inicio')} → {servicio.get('fecha_fin')}",
             "descripcion": payload.get("descripcion"),
             "moneda": payload.get("moneda", "USD"),
             "termino_pago": termino_pago,
@@ -586,23 +514,67 @@ def crear_factura_manual_anticipada(payload: dict, conn=Depends(get_db)):
 
         pdf_path = generar_factura_manual_pdf(pdf_data)
 
+        # ================= INSERT INVOICING =================
         cur.execute("""
-            UPDATE factura
-            SET pdf_path = %s
-            WHERE id = %s
-        """, (pdf_path, factura_id))
+            INSERT INTO invoicing (
+                factura_id,
+                tipo_factura,
+                tipo_documento,
+                numero_documento,
+                codigo_cliente,
+                nombre_cliente,
+                fecha_emision,
+                moneda,
+                total,
+                estado,
+                pdf_path,
+                num_informe,
+                termino_pago,
+                buque_contenedor,
+                operacion,
+                periodo_operacion,
+                descripcion_servicio,
+                created_at
+            )
+            VALUES (
+                %s, 'MANUAL', 'FACTURA',
+                %s, %s, %s, %s,
+                %s, %s, 'EMITIDA',
+                %s, %s, %s, %s, %s, %s,
+                NOW()
+            )
+            RETURNING id
+        """, (
+            servicio_id,
+            numero_factura,
+            cliente["codigo"],
+            cliente["nombrecomercial"],
+            fecha_emision,
+            payload.get("moneda", "USD"),
+            total,
+            pdf_path,
+            servicio.get("num_informe"),
+            termino_pago,
+            servicio.get("buque_contenedor"),
+            servicio.get("operacion"),
+            f"{servicio.get('fecha_inicio')} → {servicio.get('fecha_fin')}",
+            payload.get("descripcion")
+        ))
+
+        invoicing_id = cur.fetchone()["id"]
 
         conn.commit()
 
         return {
             "status": "ok",
-            "factura_id": factura_id,
-            "numero_factura": numero_factura
+            "factura_id": invoicing_id,
+            "numero_factura": numero_factura,
+            "pdf_path": pdf_path
         }
 
     except Exception as e:
         conn.rollback()
-        raise HTTPException(400, f"Error facturación anticipada: {str(e)}")
+        raise HTTPException(400, str(e))
+
     finally:
         cur.close()
-

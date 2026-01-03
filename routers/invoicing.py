@@ -267,20 +267,29 @@ def emitir_factura_anticipada(
             moneda = payload.get("moneda", "USD")
             termino_pago = int(payload.get("termino_pago", 0))
 
-            # ================= NÚMERO DE FACTURA =================
+            # ====================================================
+            # NUMERACIÓN CORRECTA (SOLO FACTURAS MANUALES)
+            # IGNORA XML COMPLETAMENTE
+            # ====================================================
             cur.execute("""
                 SELECT COALESCE(
                     MAX(numero_documento::int),
                     2200
                 ) AS ultimo
                 FROM invoicing
-                WHERE tipo_documento = 'FACTURA'
+                WHERE
+                    tipo_documento = 'FACTURA'
+                    AND tipo_factura = 'MANUAL'
+                    AND numero_documento ~ '^[0-9]+$'
+                    AND length(numero_documento) <= 10
             """)
             numero_factura = int(cur.fetchone()["ultimo"]) + 1
 
             fecha_emision = date.today()
 
-            # ================= GENERAR PDF =================
+            # ====================================================
+            # GENERAR PDF
+            # ====================================================
             from services.pdf.factura_manual_pdf import generar_factura_manual_pdf
 
             pdf_data = {
@@ -299,7 +308,9 @@ def emitir_factura_anticipada(
 
             pdf_path = generar_factura_manual_pdf(pdf_data)
 
-            # ================= INSERT INVOICING =================
+            # ====================================================
+            # INSERT INVOICING (SNAPSHOT COMPLETO)
+            # ====================================================
             cur.execute("""
                 INSERT INTO invoicing (
                     factura_id,
@@ -313,7 +324,13 @@ def emitir_factura_anticipada(
                     total,
                     estado,
                     pdf_path,
-                    created_at
+                    created_at,
+                    num_informe,
+                    termino_pago,
+                    buque_contenedor,
+                    operacion,
+                    periodo_operacion,
+                    descripcion_servicio
                 )
                 VALUES (
                     NULL,
@@ -327,17 +344,28 @@ def emitir_factura_anticipada(
                     %s,
                     'EMITIDA',
                     %s,
-                    NOW()
+                    NOW(),
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
                 )
                 RETURNING id
             """, (
-                numero_factura,
+                str(numero_factura),
                 codigo_cliente,
                 nombre_cliente,
                 fecha_emision,
                 moneda,
                 total,
-                pdf_path
+                pdf_path,
+                payload.get("num_informe"),
+                termino_pago,
+                payload.get("buque"),
+                payload.get("operacion"),
+                payload.get("periodo_operacion"),
+                descripcion
             ))
 
             factura_id = cur.fetchone()["id"]
@@ -351,7 +379,7 @@ def emitir_factura_anticipada(
             }
 
         # ====================================================
-        # FACTURA ANTICIPADA XML
+        # FACTURA ANTICIPADA XML (SIN CAST A INT)
         # ====================================================
         else:
 
@@ -374,7 +402,13 @@ def emitir_factura_anticipada(
                     moneda,
                     total,
                     estado,
-                    created_at
+                    created_at,
+                    num_informe,
+                    termino_pago,
+                    buque_contenedor,
+                    operacion,
+                    periodo_operacion,
+                    descripcion_servicio
                 )
                 VALUES (
                     NULL,
@@ -387,15 +421,26 @@ def emitir_factura_anticipada(
                     %s,
                     %s,
                     'EMITIDA',
-                    NOW()
+                    NOW(),
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
                 )
             """, (
-                data["numero_factura"],
+                data["numero_factura"],   # STRING, NO INT
                 codigo_cliente,
                 nombre_cliente,
                 data["fecha_emision"],
                 data["moneda"],
-                data["total"]
+                data["total"],
+                data.get("num_informe"),
+                data.get("termino_pago"),
+                data.get("buque"),
+                data.get("operacion"),
+                data.get("periodo_operacion"),
+                "Factura electrónica cargada desde XML"
             ))
 
             conn.commit()

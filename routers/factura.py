@@ -441,3 +441,168 @@ def crear_factura_electronica(
     finally:
         cur.close()
 
+
+# ============================================================
+# CREAR FACTURA MANUAL ANTICIPADA
+# ============================================================
+@router.post("/manual/anticipada")
+def crear_factura_manual_anticipada(payload: dict, conn=Depends(get_db)):
+
+    from services.pdf.factura_manual_pdf import generar_factura_manual_pdf
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        servicio_id = payload.get("servicio_id")
+        total = payload.get("total")
+
+        if not servicio_id:
+            raise HTTPException(status_code=400, detail="Servicio requerido")
+
+        if total in (None, ""):
+            raise HTTPException(status_code=400, detail="Total requerido")
+
+        # ====================================================
+        # OBTENER SERVICIO (SIN VALIDAR SI YA ESTÁ FACTURADO)
+        # ====================================================
+        cur.execute("""
+            SELECT *
+            FROM servicios
+            WHERE consec = %s
+        """, (servicio_id,))
+        servicio = cur.fetchone()
+
+        if not servicio:
+            raise HTTPException(status_code=404, detail="Servicio no encontrado")
+
+        # ====================================================
+        # RESOLVER CLIENTE
+        # ====================================================
+        cur.execute("""
+            SELECT codigo
+            FROM cliente
+            WHERE nombrecomercial = %s
+               OR nombrejuridico = %s
+        """, (servicio["cliente"], servicio["cliente"]))
+        cliente = cur.fetchone()
+
+        if not cliente:
+            raise HTTPException(status_code=400, detail="Cliente no encontrado")
+
+        codigo_cliente = cliente["codigo"]
+
+        # ====================================================
+        # TÉRMINO DE PAGO
+        # ====================================================
+        cur.execute("""
+            SELECT termino_pago
+            FROM cliente_credito
+            WHERE codigo_cliente = %s
+        """, (codigo_cliente,))
+        credito = cur.fetchone()
+
+        if not credito:
+            raise HTTPException(status_code=400, detail="Cliente sin crédito")
+
+        termino_pago = int(credito["termino_pago"])
+
+        # ====================================================
+        # NÚMERO FACTURA (ANTICIPADA)
+        # ====================================================
+        cur.execute("""
+            SELECT COALESCE(MAX(numero_factura::int), 999) AS ultimo
+            FROM factura
+            WHERE tipo_factura = 'ANTICIPADA_MANUAL'
+        """)
+        ultimo = cur.fetchone()["ultimo"]
+        numero_factura = ultimo + 1
+
+        fecha_factura = datetime.now()
+
+        # ====================================================
+        # INSERT FACTURA
+        # ====================================================
+        cur.execute("""
+            INSERT INTO factura (
+                tipo_factura,
+                numero_factura,
+                codigo_cliente,
+                fecha_emision,
+                termino_pago,
+                moneda,
+                total
+            )
+            VALUES (
+                'ANTICIPADA_MANUAL',
+                %s, %s, %s, %s, %s, %s
+            )
+            RETURNING id
+        """, (
+            numero_factura,
+            codigo_cliente,
+            fecha_factura,
+            termino_pago,
+            payload.get("moneda", "USD"),
+            total
+        ))
+
+        factura_id = cur.fetchone()["id"]
+
+        # ====================================================
+        # DETALLE
+        # ====================================================
+        cur.execute("""
+            INSERT INTO factura_detalle (
+                factura_id,
+                descripcion,
+                cantidad,
+                precio_unitario,
+                total_linea
+            )
+            VALUES (%s, %s, 1, %s, %s)
+        """, (
+            factura_id,
+            payload.get("descripcion"),
+            total,
+            total
+        ))
+
+        # ====================================================
+        # PDF
+        # ====================================================
+        pdf_data = {
+            "numero_factura": numero_factura,
+            "fecha_factura": fecha_factura,
+            "cliente": servicio["cliente"],
+            "buque": servicio["buque_contenedor"],
+            "operacion": servicio["operacion"],
+            "num_informe": servicio["num_informe"],
+            "periodo": f"{servicio['fecha_inicio']} a {servicio['fecha_fin']}",
+            "descripcion": payload.get("descripcion"),
+            "moneda": payload.get("moneda", "USD"),
+            "termino_pago": termino_pago,
+            "total": total
+        }
+
+        pdf_path = generar_factura_manual_pdf(pdf_data)
+
+        cur.execute("""
+            UPDATE factura
+            SET pdf_path = %s
+            WHERE id = %s
+        """, (pdf_path, factura_id))
+
+        conn.commit()
+
+        return {
+            "status": "ok",
+            "factura_id": factura_id,
+            "numero_factura": numero_factura
+        }
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(400, f"Error facturación anticipada: {str(e)}")
+    finally:
+        cur.close()
+

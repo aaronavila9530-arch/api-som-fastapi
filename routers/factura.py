@@ -378,6 +378,21 @@ router = APIRouter(
 )
 
 
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from psycopg2.extras import RealDictCursor
+from datetime import datetime
+import uuid
+
+from database import get_db
+from utils.xml_parser import parse_factura_electronica_from_bytes
+from utils.pdf_generator import generar_factura_preview_pdf
+
+router = APIRouter(
+    prefix="/factura",
+    tags=["Facturación"]
+)
+
+
 @router.post("/electronica")
 def crear_factura_electronica(
     file: UploadFile = File(...),
@@ -399,6 +414,7 @@ def crear_factura_electronica(
         cur.execute("""
             SELECT
                 s.consec,
+                s.factura,
                 s.num_informe,
                 s.buque_contenedor,
                 s.operacion,
@@ -418,22 +434,12 @@ def crear_factura_electronica(
             raise HTTPException(404, "Servicio no encontrado")
 
         # =====================================================
-        # 2️⃣ VALIDAR CONTRA INVOICING (ÚNICA FUENTE DE VERDAD)
+        # 2️⃣ VALIDAR FACTURA ASOCIADA REAL (NO POR num_informe)
         # =====================================================
-        cur.execute("""
-            SELECT 1
-            FROM invoicing
-            WHERE
-                num_informe = %s
-                AND tipo_documento = 'FACTURA'
-                AND estado <> 'ANULADA'
-            LIMIT 1
-        """, (servicio["num_informe"],))
-
-        if cur.fetchone():
+        if servicio["factura"] is not None:
             raise HTTPException(
                 400,
-                "Este servicio ya tiene una factura registrada en Invoicing"
+                "Este servicio ya tiene una factura asociada"
             )
 
         # =====================================================
@@ -554,7 +560,7 @@ def crear_factura_electronica(
         invoicing_id = cur.fetchone()["id"]
 
         # =====================================================
-        # 6️⃣ BLOQUEAR SERVICIO (MISMO FLUJO QUE MANUAL)
+        # 6️⃣ ASOCIAR FACTURA AL SERVICIO (FUENTE DE VERDAD)
         # =====================================================
         cur.execute("""
             UPDATE servicios
@@ -565,7 +571,7 @@ def crear_factura_electronica(
                 terminos_pago = %s
             WHERE consec = %s
         """, (
-            numero_documento,
+            invoicing_id,          -- 🔑 asociación REAL
             total,
             fecha_emision,
             termino_pago,

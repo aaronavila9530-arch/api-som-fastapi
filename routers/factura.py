@@ -325,74 +325,6 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
             cur.close()
 
 
-
-
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from psycopg2.extras import RealDictCursor
-from datetime import datetime
-import uuid
-
-from database import get_db
-from services.xml.factura_electronica_parser import (
-    parse_factura_electronica_from_bytes
-)
-from services.pdf.factura_preview_pdf import generar_factura_preview_pdf
-
-router = APIRouter(
-    prefix="/factura",
-    tags=["Facturación"]
-)
-
-
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Form
-from psycopg2.extras import RealDictCursor
-from datetime import datetime
-import uuid
-
-from database import get_db
-from services.xml.factura_electronica_parser import (
-    parse_factura_electronica_from_bytes
-)
-from services.pdf.factura_preview_pdf import generar_factura_preview_pdf
-
-router = APIRouter(
-    prefix="/factura",
-    tags=["Facturación"]
-)
-
-
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from psycopg2.extras import RealDictCursor
-from datetime import datetime
-import uuid
-
-from database import get_db
-from services.xml.factura_electronica_parser import (
-    parse_factura_electronica_from_bytes
-)
-from services.pdf.factura_preview_pdf import generar_factura_preview_pdf
-
-router = APIRouter(
-    prefix="/factura",
-    tags=["Facturación"]
-)
-
-
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from psycopg2.extras import RealDictCursor
-from datetime import datetime
-import uuid
-
-from database import get_db
-from utils.xml_parser import parse_factura_electronica_from_bytes
-from utils.pdf_generator import generar_factura_preview_pdf
-
-router = APIRouter(
-    prefix="/factura",
-    tags=["Facturación"]
-)
-
-
 @router.post("/electronica")
 def crear_factura_electronica(
     file: UploadFile = File(...),
@@ -434,7 +366,7 @@ def crear_factura_electronica(
             raise HTTPException(404, "Servicio no encontrado")
 
         # =====================================================
-        # 2️⃣ VALIDAR FACTURA ASOCIADA REAL (NO POR num_informe)
+        # 2️⃣ VALIDAR FACTURA ASOCIADA REAL
         # =====================================================
         if servicio["factura"] is not None:
             raise HTTPException(
@@ -460,12 +392,17 @@ def crear_factura_electronica(
             )
 
         moneda = data_xml.get("moneda") or "CRC"
-        total = float(data_xml.get("total") or 0)
 
-        fecha_emision = (
-            data_xml.get("fecha_emision")
-            or datetime.now().date()
-        )
+        try:
+            total = float(data_xml.get("total") or 0)
+        except (TypeError, ValueError):
+            raise HTTPException(400, "XML inválido: total no numérico")
+
+        fecha_emision_raw = data_xml.get("fecha_emision")
+        if isinstance(fecha_emision_raw, datetime):
+            fecha_emision = fecha_emision_raw.date()
+        else:
+            fecha_emision = fecha_emision_raw or datetime.now().date()
 
         try:
             termino_pago = int(float(data_xml.get("termino_pago") or 0))
@@ -485,9 +422,7 @@ def crear_factura_electronica(
                     "cliente": servicio["cliente"],
                     "buque_contenedor": servicio["buque_contenedor"],
                     "operacion": servicio["operacion"],
-                    "periodo": (
-                        f"{servicio['fecha_inicio']} a {servicio['fecha_fin']}"
-                    ),
+                    "periodo": f"{servicio['fecha_inicio']} a {servicio['fecha_fin']}",
                     "moneda": moneda,
                     "total": total
                 },
@@ -571,7 +506,7 @@ def crear_factura_electronica(
                 terminos_pago = %s
             WHERE consec = %s
         """, (
-            invoicing_id,        
+            invoicing_id,
             total,
             fecha_emision,
             termino_pago,
@@ -593,7 +528,9 @@ def crear_factura_electronica(
         conn.rollback()
         raise HTTPException(500, str(e))
     finally:
+        file.file.close()
         cur.close()
+
 
 
 

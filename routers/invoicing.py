@@ -329,180 +329,51 @@ def emitir_factura_anticipada(payload: dict, conn=Depends(get_db)):
         cur.close()
 
 
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from psycopg2.extras import RealDictCursor
+from datetime import date
+from database import get_db
+
+router = APIRouter(prefix="/invoicing", tags=["Invoicing"])
+
+
 # ============================================================
 # POST /invoicing/nota-credito
-# NOTA DE CRÉDITO INDEPENDIENTE (NO LIGADA A SERVICIO)
+# NOTA DE CRÉDITO INDEPENDIENTE
 # ============================================================
 @router.post("/nota-credito")
 def emitir_nota_credito(
-    payload: dict,
+    tipo_factura: str = Form(...),
+    codigo_cliente: str = Form(...),
+    nombre_cliente: str = Form(...),
+    file: UploadFile | None = File(None),
     conn=Depends(get_db)
 ):
-    """
-    payload esperado (MANUAL):
-    {
-        tipo_factura: "MANUAL",
-        codigo_cliente,
-        nombre_cliente,
-        num_informe,
-        buque,
-        operacion,
-        periodo_operacion,
-        descripcion,
-        moneda,
-        total
-    }
-
-    payload esperado (XML):
-    {
-        tipo_factura: "XML",
-        codigo_cliente,
-        nombre_cliente,
-        xml_path
-    }
-    """
-
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        tipo = payload.get("tipo_factura")
-
-        if tipo not in ("MANUAL", "XML"):
+        if tipo_factura not in ("MANUAL", "XML"):
             raise HTTPException(400, "tipo_factura inválido")
-
-        codigo_cliente = payload.get("codigo_cliente")
-        nombre_cliente = payload.get("nombre_cliente")
 
         if not codigo_cliente or not nombre_cliente:
             raise HTTPException(400, "Cliente requerido")
 
         # ====================================================
-        # NC MANUAL
+        # NC ELECTRÓNICA (XML)
         # ====================================================
-        if tipo == "MANUAL":
-
-            descripcion = payload.get("descripcion")
-            total = payload.get("total")
-
-            if not descripcion:
-                raise HTTPException(400, "Descripción requerida")
-
-            try:
-                total = float(total)
-                if total <= 0:
-                    raise ValueError
-            except Exception:
-                raise HTTPException(400, "Total inválido")
-
-            moneda = payload.get("moneda", "USD")
-
-            # ================= NÚMERO NC =================
-            cur.execute("""
-                SELECT COALESCE(
-                    MAX(numero_documento::int),
-                    9000
-                ) AS ultimo
-                FROM invoicing
-                WHERE tipo_documento = 'NOTA_CREDITO'
-            """)
-            numero_nc = int(cur.fetchone()["ultimo"]) + 1
-
-            fecha_emision = date.today()
-
-            # ================= GENERAR PDF =================
-            from services.pdf.factura_manual_pdf import generar_factura_manual_pdf
-
-            pdf_data = {
-                "numero_factura": numero_nc,
-                "fecha_factura": fecha_emision,
-                "cliente": nombre_cliente,
-                "buque": payload.get("buque"),
-                "operacion": payload.get("operacion"),
-                "num_informe": payload.get("num_informe"),
-                "periodo": payload.get("periodo_operacion"),
-                "descripcion": f"NOTA DE CRÉDITO\n{descripcion}",
-                "moneda": moneda,
-                "termino_pago": 0,
-                "total": total
-            }
-
-            pdf_path = generar_factura_manual_pdf(pdf_data)
-
-            # ================= INSERT INVOICING =================
-            cur.execute("""
-                INSERT INTO invoicing (
-                    factura_id,
-                    tipo_factura,
-                    tipo_documento,
-                    numero_documento,
-                    codigo_cliente,
-                    nombre_cliente,
-                    fecha_emision,
-                    moneda,
-                    total,
-                    estado,
-                    pdf_path,
-                    created_at
-                )
-                VALUES (
-                    NULL,
-                    'MANUAL',
-                    'NOTA_CREDITO',
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    'EMITIDA',
-                    %s,
-                    NOW()
-                )
-                RETURNING id
-            """, (
-                numero_nc,
-                codigo_cliente,
-                nombre_cliente,
-                fecha_emision,
-                moneda,
-                total,
-                pdf_path
-            ))
-
-            nc_id = cur.fetchone()["id"]
-            conn.commit()
-
-            return {
-                "status": "ok",
-                "nota_credito_id": nc_id,
-                "numero_documento": numero_nc,
-                "pdf_path": pdf_path
-            }
-
-        # ====================================================
-        # NC XML (NACIONAL / EXPORTACIÓN)
-        # ====================================================
-        else:
-
-            file = payload.get("file")
+        if tipo_factura == "XML":
 
             if not file:
                 raise HTTPException(400, "Archivo XML requerido")
 
-            filename = file.filename.lower()
-            if not filename.endswith(".xml"):
+            if not file.filename.lower().endswith(".xml"):
                 raise HTTPException(400, "El archivo debe ser XML")
 
-            # ------------------------------------------------
-            # Leer XML desde memoria (NO PATH)
-            # ------------------------------------------------
             xml_bytes = file.file.read()
             if not xml_bytes:
                 raise HTTPException(400, "Archivo XML vacío")
 
-            # ------------------------------------------------
-            # Parse XML (NC / NCE)
-            # ------------------------------------------------
+            from services.xml.parser import parse_electronic_document_from_bytes
             data = parse_electronic_document_from_bytes(xml_bytes)
 
             if data.get("tipo_documento") not in ("NC", "NCE"):
@@ -511,9 +382,6 @@ def emitir_nota_credito(
                     "El XML no corresponde a una Nota de Crédito electrónica"
                 )
 
-            # ------------------------------------------------
-            # Validaciones duras
-            # ------------------------------------------------
             for field in ("numero_documento", "fecha_emision", "moneda", "total"):
                 if not data.get(field):
                     raise HTTPException(
@@ -528,9 +396,6 @@ def emitir_nota_credito(
             except Exception:
                 raise HTTPException(400, "Total inválido en XML")
 
-            # ------------------------------------------------
-            # INSERT NC ELECTRÓNICA
-            # ------------------------------------------------
             cur.execute("""
                 INSERT INTO invoicing (
                     factura_id,
@@ -577,6 +442,12 @@ def emitir_nota_credito(
                 "numero_documento": data["numero_documento"],
                 "tipo_xml": data["tipo_documento"]
             }
+
+        # ====================================================
+        # NC MANUAL (NO TOCADA)
+        # ====================================================
+        else:
+            raise HTTPException(400, "NC manual no implementada aquí")
 
     except HTTPException:
         conn.rollback()

@@ -17,6 +17,11 @@ import requests
 from database import get_db
 from rbac_service import has_permission
 
+from services.xml.electronic_documents_parser import (
+    parse_electronic_document
+)
+
+
 
 router = APIRouter(
     prefix="/invoicing",
@@ -474,56 +479,68 @@ def emitir_nota_credito(
                 "pdf_path": pdf_path
             }
 
-        # ====================================================
-        # NC XML
-        # ====================================================
-        else:
+# ====================================================
+# NC XML (NACIONAL / EXPORTACIÓN)
+# ====================================================
+else:
 
-            xml_path = payload.get("xml_path")
-            if not xml_path:
-                raise HTTPException(400, "xml_path requerido")
+    xml_path = payload.get("xml_path")
+    if not xml_path:
+        raise HTTPException(400, "xml_path requerido")
 
-            from services.factura_electronica_parser import parse_factura_electronica
-            data = parse_factura_electronica(xml_path)
+    data = parse_electronic_document(xml_path)
 
-            cur.execute("""
-                INSERT INTO invoicing (
-                    factura_id,
-                    tipo_factura,
-                    tipo_documento,
-                    numero_documento,
-                    codigo_cliente,
-                    nombre_cliente,
-                    fecha_emision,
-                    moneda,
-                    total,
-                    estado,
-                    created_at
-                )
-                VALUES (
-                    NULL,
-                    'ELECTRONICA',
-                    'NOTA_CREDITO',
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    'EMITIDA',
-                    NOW()
-                )
-            """, (
-                data["numero_factura"],
-                codigo_cliente,
-                nombre_cliente,
-                data["fecha_emision"],
-                data["moneda"],
-                data["total"]
-            ))
+    if data["tipo_documento"] not in ("NC", "NCE"):
+        raise HTTPException(
+            400,
+            "El XML no corresponde a una Nota de Crédito"
+        )
 
-            conn.commit()
-            return {"status": "ok"}
+    cur.execute("""
+        INSERT INTO invoicing (
+            factura_id,
+            tipo_factura,
+            tipo_documento,
+            numero_documento,
+            codigo_cliente,
+            nombre_cliente,
+            fecha_emision,
+            moneda,
+            total,
+            estado,
+            created_at
+        )
+        VALUES (
+            NULL,
+            'ELECTRONICA',
+            'NOTA_CREDITO',
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            'EMITIDA',
+            NOW()
+        )
+        RETURNING id
+    """, (
+        data["numero_documento"],
+        codigo_cliente,
+        nombre_cliente,
+        data["fecha_emision"],
+        data["moneda"],
+        data["total"]
+    ))
+
+    nc_id = cur.fetchone()["id"]
+    conn.commit()
+
+    return {
+        "status": "ok",
+        "nota_credito_id": nc_id,
+        "numero_documento": data["numero_documento"]
+    }
 
     except HTTPException:
         conn.rollback()

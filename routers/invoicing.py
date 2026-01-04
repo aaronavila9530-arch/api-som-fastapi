@@ -329,125 +329,117 @@ def emitir_factura_anticipada(payload: dict, conn=Depends(get_db)):
         cur.close()
 
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
-from psycopg2.extras import RealDictCursor
-from datetime import date
-from database import get_db
-
-router = APIRouter(prefix="/invoicing", tags=["Invoicing"])
-
-
 # ============================================================
 # POST /invoicing/nota-credito
 # NOTA DE CRÉDITO INDEPENDIENTE
 # ============================================================
 @router.post("/nota-credito")
 def emitir_nota_credito(
-    tipo_factura: str = Form(...),
-    codigo_cliente: str = Form(...),
-    nombre_cliente: str = Form(...),
-    file: UploadFile | None = File(None),
+    payload: dict,
     conn=Depends(get_db)
 ):
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        if tipo_factura not in ("MANUAL", "XML"):
+        tipo = payload.get("tipo_factura")
+
+        if tipo not in ("MANUAL", "XML"):
             raise HTTPException(400, "tipo_factura inválido")
+
+        codigo_cliente = payload.get("codigo_cliente")
+        nombre_cliente = payload.get("nombre_cliente")
 
         if not codigo_cliente or not nombre_cliente:
             raise HTTPException(400, "Cliente requerido")
 
         # ====================================================
-        # NC ELECTRÓNICA (XML)
+        # NC MANUAL (SIN TOCAR)
         # ====================================================
-        if tipo_factura == "XML":
+        if tipo == "MANUAL":
+            raise HTTPException(400, "NC manual sin cambios aquí")
 
-            if not file:
-                raise HTTPException(400, "Archivo XML requerido")
+        # ====================================================
+        # NC XML (JSON PURO, NO MULTIPART)
+        # ====================================================
+        xml_content = payload.get("xml_content")
 
-            if not file.filename.lower().endswith(".xml"):
-                raise HTTPException(400, "El archivo debe ser XML")
+        if not xml_content:
+            raise HTTPException(400, "xml_content requerido")
 
-            xml_bytes = file.file.read()
-            if not xml_bytes:
-                raise HTTPException(400, "Archivo XML vacío")
+        try:
+            xml_bytes = xml_content.encode("utf-8")
+        except Exception:
+            raise HTTPException(400, "XML inválido")
 
-            from services.xml.parser import parse_electronic_document_from_bytes
-            data = parse_electronic_document_from_bytes(xml_bytes)
+        from xml_parser import parse_electronic_document_from_bytes
+        data = parse_electronic_document_from_bytes(xml_bytes)
 
-            if data.get("tipo_documento") not in ("NC", "NCE"):
+        if data.get("tipo_documento") not in ("NC", "NCE"):
+            raise HTTPException(
+                400,
+                "El XML no corresponde a una Nota de Crédito electrónica"
+            )
+
+        for field in ("numero_documento", "fecha_emision", "moneda", "total"):
+            if not data.get(field):
                 raise HTTPException(
                     400,
-                    "El XML no corresponde a una Nota de Crédito electrónica"
+                    f"XML inválido: falta {field}"
                 )
 
-            for field in ("numero_documento", "fecha_emision", "moneda", "total"):
-                if not data.get(field):
-                    raise HTTPException(
-                        400,
-                        f"XML inválido: falta {field}"
-                    )
+        try:
+            total = float(data["total"])
+            if total <= 0:
+                raise ValueError
+        except Exception:
+            raise HTTPException(400, "Total inválido en XML")
 
-            try:
-                total = float(data["total"])
-                if total <= 0:
-                    raise ValueError
-            except Exception:
-                raise HTTPException(400, "Total inválido en XML")
-
-            cur.execute("""
-                INSERT INTO invoicing (
-                    factura_id,
-                    tipo_factura,
-                    tipo_documento,
-                    numero_documento,
-                    codigo_cliente,
-                    nombre_cliente,
-                    fecha_emision,
-                    moneda,
-                    total,
-                    estado,
-                    created_at
-                )
-                VALUES (
-                    NULL,
-                    'ELECTRONICA',
-                    'NOTA_CREDITO',
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    'EMITIDA',
-                    NOW()
-                )
-                RETURNING id
-            """, (
-                str(data["numero_documento"]),
+        cur.execute("""
+            INSERT INTO invoicing (
+                factura_id,
+                tipo_factura,
+                tipo_documento,
+                numero_documento,
                 codigo_cliente,
                 nombre_cliente,
-                data["fecha_emision"],
-                data["moneda"],
-                total
-            ))
+                fecha_emision,
+                moneda,
+                total,
+                estado,
+                created_at
+            )
+            VALUES (
+                NULL,
+                'ELECTRONICA',
+                'NOTA_CREDITO',
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                'EMITIDA',
+                NOW()
+            )
+            RETURNING id
+        """, (
+            str(data["numero_documento"]),
+            codigo_cliente,
+            nombre_cliente,
+            data["fecha_emision"],
+            data["moneda"],
+            total
+        ))
 
-            nc_id = cur.fetchone()["id"]
-            conn.commit()
+        nc_id = cur.fetchone()["id"]
+        conn.commit()
 
-            return {
-                "status": "ok",
-                "nota_credito_id": nc_id,
-                "numero_documento": data["numero_documento"],
-                "tipo_xml": data["tipo_documento"]
-            }
-
-        # ====================================================
-        # NC MANUAL (NO TOCADA)
-        # ====================================================
-        else:
-            raise HTTPException(400, "NC manual no implementada aquí")
+        return {
+            "status": "ok",
+            "nota_credito_id": nc_id,
+            "numero_documento": data["numero_documento"],
+            "tipo_xml": data["tipo_documento"]
+        }
 
     except HTTPException:
         conn.rollback()

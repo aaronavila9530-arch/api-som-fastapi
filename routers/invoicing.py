@@ -479,68 +479,83 @@ def emitir_nota_credito(
                 "pdf_path": pdf_path
             }
 
-# ====================================================
-# NC XML (NACIONAL / EXPORTACIÓN)
-# ====================================================
-else:
+        # ====================================================
+        # NC XML (NACIONAL / EXPORTACIÓN)
+        # ====================================================
+        else:
 
-    xml_path = payload.get("xml_path")
-    if not xml_path:
-        raise HTTPException(400, "xml_path requerido")
+            xml_path = payload.get("xml_path")
+            if not xml_path:
+                raise HTTPException(400, "xml_path requerido")
 
-    data = parse_electronic_document(xml_path)
+            data = parse_electronic_document(xml_path)
 
-    if data["tipo_documento"] not in ("NC", "NCE"):
-        raise HTTPException(
-            400,
-            "El XML no corresponde a una Nota de Crédito"
-        )
+            if data.get("tipo_documento") not in ("NC", "NCE"):
+                raise HTTPException(
+                    400,
+                    "El XML no corresponde a una Nota de Crédito electrónica"
+                )
 
-    cur.execute("""
-        INSERT INTO invoicing (
-            factura_id,
-            tipo_factura,
-            tipo_documento,
-            numero_documento,
-            codigo_cliente,
-            nombre_cliente,
-            fecha_emision,
-            moneda,
-            total,
-            estado,
-            created_at
-        )
-        VALUES (
-            NULL,
-            'ELECTRONICA',
-            'NOTA_CREDITO',
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            %s,
-            'EMITIDA',
-            NOW()
-        )
-        RETURNING id
-    """, (
-        data["numero_documento"],
-        codigo_cliente,
-        nombre_cliente,
-        data["fecha_emision"],
-        data["moneda"],
-        data["total"]
-    ))
+            for field in ("numero_documento", "fecha_emision", "moneda", "total"):
+                if not data.get(field):
+                    raise HTTPException(
+                        400,
+                        f"XML inválido: falta {field}"
+                    )
 
-    nc_id = cur.fetchone()["id"]
-    conn.commit()
+            try:
+                total = float(data["total"])
+                if total <= 0:
+                    raise ValueError
+            except Exception:
+                raise HTTPException(400, "Total inválido en XML")
 
-    return {
-        "status": "ok",
-        "nota_credito_id": nc_id,
-        "numero_documento": data["numero_documento"]
-    }
+            cur.execute("""
+                INSERT INTO invoicing (
+                    factura_id,
+                    tipo_factura,
+                    tipo_documento,
+                    numero_documento,
+                    codigo_cliente,
+                    nombre_cliente,
+                    fecha_emision,
+                    moneda,
+                    total,
+                    estado,
+                    created_at
+                )
+                VALUES (
+                    NULL,
+                    'ELECTRONICA',
+                    'NOTA_CREDITO',
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    'EMITIDA',
+                    NOW()
+                )
+                RETURNING id
+            """, (
+                str(data["numero_documento"]),
+                codigo_cliente,
+                nombre_cliente,
+                data["fecha_emision"],
+                data["moneda"],
+                total
+            ))
+
+            nc_id = cur.fetchone()["id"]
+            conn.commit()
+
+            return {
+                "status": "ok",
+                "nota_credito_id": nc_id,
+                "numero_documento": data["numero_documento"],
+                "tipo_xml": data["tipo_documento"]
+            }
 
     except HTTPException:
         conn.rollback()

@@ -1,10 +1,18 @@
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Header,
+    UploadFile,
+    File,
+    Form
+)
+
 from psycopg2.extras import RealDictCursor
 from datetime import datetime
 from fastapi.responses import FileResponse
 import os
 import uuid
-from fastapi import File
 
 from database import get_db
 from rbac_service import has_permission
@@ -12,7 +20,10 @@ from rbac_service import has_permission
 from services.xml.factura_electronica_parser import (
     parse_factura_electronica_from_bytes
 )
-from services.pdf.factura_preview_pdf import generar_factura_preview_pdf
+
+from services.pdf.factura_preview_pdf import (
+    generar_factura_preview_pdf
+)
 
 router = APIRouter(
     prefix="/factura",

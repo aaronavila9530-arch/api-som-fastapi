@@ -4,6 +4,7 @@ from datetime import datetime
 from fastapi.responses import FileResponse
 import os
 import uuid
+from fastapi import File
 
 from database import get_db
 from rbac_service import has_permission

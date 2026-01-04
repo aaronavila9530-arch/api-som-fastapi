@@ -442,3 +442,63 @@ def crear_factura_electronica(
         cur.close()
 
 
+from fastapi import Query
+from datetime import date
+
+# ============================================================
+# PREVIEW INFO (termino_pago desde cliente_credito usando nombre cliente)
+# ============================================================
+@router.get("/preview-info")
+def get_factura_preview_info(
+    nombre_cliente: str = Query(..., description="Nombre comercial o jurídico del cliente"),
+    conn=Depends(get_db)
+):
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        nombre = (nombre_cliente or "").strip()
+        if not nombre:
+            raise HTTPException(status_code=400, detail="nombre_cliente requerido")
+
+        # 1) Resolver codigo_cliente desde tabla cliente (nombrecomercial / nombrejuridico)
+        cur.execute("""
+            SELECT codigo
+            FROM cliente
+            WHERE nombrecomercial = %s
+               OR nombrejuridico = %s
+            LIMIT 1
+        """, (nombre, nombre))
+
+        row_cliente = cur.fetchone()
+        if not row_cliente or not row_cliente.get("codigo"):
+            raise HTTPException(
+                status_code=404,
+                detail="No se pudo resolver el código del cliente desde tabla cliente"
+            )
+
+        codigo_cliente = row_cliente["codigo"]
+
+        # 2) Buscar termino_pago en cliente_credito usando codigo_cliente
+        cur.execute("""
+            SELECT termino_pago
+            FROM cliente_credito
+            WHERE codigo_cliente = %s
+            LIMIT 1
+        """, (codigo_cliente,))
+
+        row_credito = cur.fetchone()
+        termino_pago = None
+        if row_credito and row_credito.get("termino_pago") is not None:
+            termino_pago = int(row_credito["termino_pago"])
+
+        return {
+            "codigo_cliente": codigo_cliente,
+            "termino_pago": termino_pago,
+            "fecha_emision": date.today().isoformat()
+        }
+
+    finally:
+        cur.close()
+
+
+

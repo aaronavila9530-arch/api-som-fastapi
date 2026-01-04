@@ -361,21 +361,41 @@ router = APIRouter(
 )
 
 
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from psycopg2.extras import RealDictCursor
+from datetime import datetime
+import uuid
+
+from database import get_db
+from services.xml.factura_electronica_parser import (
+    parse_factura_electronica_from_bytes
+)
+from services.pdf.factura_preview_pdf import generar_factura_preview_pdf
+
+router = APIRouter(
+    prefix="/factura",
+    tags=["Facturación"]
+)
+
+
 @router.post("/electronica")
 def crear_factura_electronica(
     file: UploadFile = File(...),
     servicio_id: int = Form(...),
     conn=Depends(get_db)
 ):
+    # =========================================================
+    # 0️⃣ VALIDACIONES BÁSICAS
+    # =========================================================
     if not file.filename.lower().endswith(".xml"):
         raise HTTPException(400, "El archivo debe ser XML")
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        # ====================================================
-        # 1️⃣ OBTENER SERVICIO (FUENTE DE VERDAD)
-        # ====================================================
+        # =====================================================
+        # 1️⃣ SERVICIO = FUENTE DE VERDAD OPERATIVA
+        # =====================================================
         cur.execute("""
             SELECT
                 s.consec,
@@ -385,7 +405,6 @@ def crear_factura_electronica(
                 s.fecha_inicio,
                 s.fecha_fin,
                 s.cliente,
-                s.factura,
                 c.codigo AS codigo_cliente
             FROM servicios s
             JOIN cliente c
@@ -398,12 +417,28 @@ def crear_factura_electronica(
         if not servicio:
             raise HTTPException(404, "Servicio no encontrado")
 
-        if servicio.get("factura"):
-            raise HTTPException(400, "El servicio ya fue facturado")
+        # =====================================================
+        # 2️⃣ VALIDAR CONTRA INVOICING (ÚNICA FUENTE DE VERDAD)
+        # =====================================================
+        cur.execute("""
+            SELECT 1
+            FROM invoicing
+            WHERE
+                num_informe = %s
+                AND tipo_documento = 'FACTURA'
+                AND estado <> 'ANULADA'
+            LIMIT 1
+        """, (servicio["num_informe"],))
 
-        # ====================================================
-        # 2️⃣ PARSEAR XML (TOLERANTE FE / FEE)
-        # ====================================================
+        if cur.fetchone():
+            raise HTTPException(
+                400,
+                "Este servicio ya tiene una factura registrada en Invoicing"
+            )
+
+        # =====================================================
+        # 3️⃣ PARSEAR XML (FE / FEE – TOLERANTE)
+        # =====================================================
         xml_bytes = file.file.read()
         data_xml = parse_factura_electronica_from_bytes(xml_bytes)
 
@@ -415,7 +450,7 @@ def crear_factura_electronica(
         if not numero_documento:
             raise HTTPException(
                 400,
-                "XML inválido: no se pudo obtener Número ni Clave"
+                "XML inválido: no se pudo obtener número ni clave"
             )
 
         moneda = data_xml.get("moneda") or "CRC"
@@ -431,12 +466,12 @@ def crear_factura_electronica(
         except (TypeError, ValueError):
             termino_pago = 0
 
-        # ====================================================
-        # 3️⃣ PDF PREVIEW (NO BLOQUEANTE)
-        # ====================================================
+        # =====================================================
+        # 4️⃣ PDF PREVIEW (NO BLOQUEANTE)
+        # =====================================================
         pdf_path = None
         try:
-            tmp = f"/tmp/factura_preview_{uuid.uuid4().hex}.pdf"
+            tmp_pdf = f"/tmp/factura_preview_{uuid.uuid4().hex}.pdf"
             pdf_path = generar_factura_preview_pdf(
                 {
                     "numero_documento": numero_documento,
@@ -444,18 +479,20 @@ def crear_factura_electronica(
                     "cliente": servicio["cliente"],
                     "buque_contenedor": servicio["buque_contenedor"],
                     "operacion": servicio["operacion"],
-                    "periodo": f"{servicio['fecha_inicio']} a {servicio['fecha_fin']}",
+                    "periodo": (
+                        f"{servicio['fecha_inicio']} a {servicio['fecha_fin']}"
+                    ),
                     "moneda": moneda,
                     "total": total
                 },
-                output_path=tmp
+                output_path=tmp_pdf
             )
         except Exception:
-            pdf_path = None
+            pdf_path = None  # preview es opcional
 
-        # ====================================================
-        # 4️⃣ INSERTAR EN INVOICING
-        # ====================================================
+        # =====================================================
+        # 5️⃣ INSERTAR EN INVOICING
+        # =====================================================
         cur.execute("""
             INSERT INTO invoicing (
                 factura_id,
@@ -516,9 +553,9 @@ def crear_factura_electronica(
 
         invoicing_id = cur.fetchone()["id"]
 
-        # ====================================================
-        # 5️⃣ BLOQUEAR SERVICIO (MISMO COMPORTAMIENTO QUE MANUAL)
-        # ====================================================
+        # =====================================================
+        # 6️⃣ BLOQUEAR SERVICIO (MISMO FLUJO QUE MANUAL)
+        # =====================================================
         cur.execute("""
             UPDATE servicios
             SET
@@ -551,7 +588,6 @@ def crear_factura_electronica(
         raise HTTPException(500, str(e))
     finally:
         cur.close()
-
 
 
 

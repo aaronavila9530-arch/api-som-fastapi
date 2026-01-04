@@ -536,6 +536,7 @@ def emitir_nota_credito(
         )
     finally:
         cur.close()
+
 @router.post("/anticipada/xml")
 def emitir_factura_anticipada_xml(
     codigo_cliente: str = Form(...),
@@ -547,52 +548,66 @@ def emitir_factura_anticipada_xml(
 
     try:
         # ====================================================
-        # 1️⃣ Leer XML
+        # 1️⃣ Validaciones básicas
+        # ====================================================
+        if not file or not file.filename:
+            raise HTTPException(400, "Archivo XML requerido")
+
+        if not file.filename.lower().endswith(".xml"):
+            raise HTTPException(400, "El archivo debe ser XML")
+
+        # ====================================================
+        # 2️⃣ Leer XML como BYTES (FORMA CORRECTA)
         # ====================================================
         xml_bytes = file.file.read()
-
         if not xml_bytes:
-            raise HTTPException(400, "XML vacío")
+            raise HTTPException(400, "Archivo XML vacío")
 
         # ====================================================
-        # 2️⃣ Parsear XML
+        # 3️⃣ Parsear XML (USANDO TU PARSER REAL)
         # ====================================================
-        from services.factura_electronica_parser import (
-            parse_factura_electronica_from_bytes
-        )
-
-        data = parse_factura_electronica_from_bytes(xml_bytes)
-
-        # ====================================================
-        # 3️⃣ Asegurar carpetas (/tmp SIEMPRE)
-        # ====================================================
-        os.makedirs("/tmp/pdf", exist_ok=True)
-        os.makedirs("/tmp/xml", exist_ok=True)
+        try:
+            from services.xml.factura_electronica_parser import (
+                parse_factura_electronica_from_bytes
+            )
+            data = parse_factura_electronica_from_bytes(xml_bytes)
+        except Exception as e:
+            raise HTTPException(400, f"Error parseando XML: {str(e)}")
 
         # ====================================================
-        # 4️⃣ Guardar snapshot XML (opcional pero recomendado)
+        # 4️⃣ Validar campos críticos
         # ====================================================
-        xml_filename = f"Factura_{data['numero_factura']}.xml"
-        xml_path = f"/tmp/xml/{xml_filename}"
+        required_fields = [
+            "numero_factura",
+            "fecha_emision",
+            "moneda",
+            "total"
+        ]
 
-        with open(xml_path, "wb") as f:
-            f.write(xml_bytes)
+        for f in required_fields:
+            if f not in data or data[f] in (None, "", 0):
+                raise HTTPException(
+                    400,
+                    f"XML inválido: campo requerido faltante ({f})"
+                )
 
         # ====================================================
         # 5️⃣ Generar PDF espejo
         # ====================================================
-        from services.pdf.factura_xml_pdf import generar_factura_xml_pdf
-
-        pdf_path = generar_factura_xml_pdf({
-            "numero_factura": data["numero_factura"],
-            "fecha_emision": data["fecha_emision"],
-            "nombre_cliente": nombre_cliente,
-            "moneda": data["moneda"],
-            "total": data["total"]
-        })
+        try:
+            from services.pdf.factura_xml_pdf import generar_factura_xml_pdf
+            pdf_path = generar_factura_xml_pdf({
+                "numero_factura": data["numero_factura"],
+                "fecha_emision": data["fecha_emision"],
+                "nombre_cliente": nombre_cliente,
+                "moneda": data["moneda"],
+                "total": data["total"]
+            })
+        except Exception as e:
+            raise HTTPException(500, f"Error generando PDF: {str(e)}")
 
         # ====================================================
-        # 6️⃣ Insert invoicing
+        # 6️⃣ Insert DB
         # ====================================================
         cur.execute("""
             INSERT INTO invoicing (
@@ -627,12 +642,12 @@ def emitir_factura_anticipada_xml(
             )
             RETURNING id
         """, (
-            data["numero_factura"],
+            str(data["numero_factura"]),
             codigo_cliente,
             nombre_cliente,
             data["fecha_emision"],
             data["moneda"],
-            data["total"],
+            float(data["total"]),
             pdf_path
         ))
 
@@ -652,7 +667,10 @@ def emitir_factura_anticipada_xml(
 
     except Exception as e:
         conn.rollback()
-        raise HTTPException(500, f"Error XML anticipada: {str(e)}")
+        raise HTTPException(
+            500,
+            f"Error inesperado XML anticipada: {str(e)}"
+        )
 
     finally:
         cur.close()

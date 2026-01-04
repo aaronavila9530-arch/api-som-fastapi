@@ -484,27 +484,37 @@ def emitir_nota_credito(
         # ====================================================
         else:
 
-            xml_path = payload.get("xml_path")
-            if not xml_path:
-                raise HTTPException(400, "xml_path requerido")
+            file: UploadFile = payload.get("file")
+
+            if not file:
+                raise HTTPException(400, "Archivo XML requerido")
+
+            if not file.filename.lower().endswith(".xml"):
+                raise HTTPException(400, "El archivo debe ser XML")
 
             # ------------------------------------------------
-            # Parse XML REAL (NC / NCE)
+            # Leer XML desde memoria (NO usar paths locales)
             # ------------------------------------------------
-            data = parse_electronic_document(xml_path)
+            xml_bytes = file.file.read()
 
-            # data esperado:
+            if not xml_bytes:
+                raise HTTPException(400, "Archivo XML vacío")
+
+            # ------------------------------------------------
+            # Parse XML (NC / NCE)
+            # ------------------------------------------------
+            data = parse_electronic_document_from_bytes(xml_bytes)
+
+            # Esperado:
             # {
-            #   "tipo_documento": "NC" | "NCE",
-            #   "numero_documento": str,
-            #   "fecha_emision": date,
-            #   "moneda": str,
-            #   "total": float
+            #   tipo_documento: "NC" | "NCE",
+            #   numero_documento,
+            #   fecha_emision,
+            #   moneda,
+            #   total
             # }
 
-            tipo_documento = data.get("tipo_documento")
-
-            if tipo_documento not in ("NC", "NCE"):
+            if data.get("tipo_documento") not in ("NC", "NCE"):
                 raise HTTPException(
                     400,
                     "El XML no corresponde a una Nota de Crédito electrónica"
@@ -513,7 +523,14 @@ def emitir_nota_credito(
             # ------------------------------------------------
             # Validaciones duras
             # ------------------------------------------------
-            for field in ("numero_documento", "fecha_emision", "moneda", "total"):
+            required_fields = (
+                "numero_documento",
+                "fecha_emision",
+                "moneda",
+                "total"
+            )
+
+            for field in required_fields:
                 if not data.get(field):
                     raise HTTPException(
                         400,
@@ -528,7 +545,7 @@ def emitir_nota_credito(
                 raise HTTPException(400, "Total inválido en XML")
 
             # ------------------------------------------------
-            # INSERT INVOICING
+            # INSERT NC ELECTRÓNICA
             # ------------------------------------------------
             cur.execute("""
                 INSERT INTO invoicing (
@@ -574,7 +591,7 @@ def emitir_nota_credito(
                 "status": "ok",
                 "nota_credito_id": nc_id,
                 "numero_documento": data["numero_documento"],
-                "tipo_xml": tipo_documento
+                "tipo_xml": data["tipo_documento"]
             }
 
     except HTTPException:

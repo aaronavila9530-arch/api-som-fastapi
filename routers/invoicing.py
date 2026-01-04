@@ -12,6 +12,7 @@ from psycopg2.extras import RealDictCursor
 from datetime import date
 from typing import Optional
 import os
+import requests
 
 from database import get_db
 from rbac_service import has_permission
@@ -200,242 +201,6 @@ def emitir_factura(
         conn.rollback()
         raise HTTPException(500, f"Error emitiendo factura: {str(e)}")
 
-    finally:
-        cur.close()
-
-# ============================================================
-# POST /invoicing/anticipada
-# FACTURA ANTICIPADA (MANUAL / XML)
-# ============================================================
-@router.post("/anticipada")
-def emitir_factura_anticipada(payload: dict, conn=Depends(get_db)):
-
-    from datetime import date
-    from psycopg2.extras import RealDictCursor
-
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-
-    try:
-        tipo = payload.get("tipo_factura")
-
-        if tipo not in ("MANUAL", "XML"):
-            raise HTTPException(400, "tipo_factura inválido")
-
-        codigo_cliente = payload.get("codigo_cliente")
-        nombre_cliente = payload.get("nombre_cliente")
-
-        if not codigo_cliente or not nombre_cliente:
-            raise HTTPException(400, "Cliente requerido")
-
-        # ====================================================
-        # FACTURA MANUAL ANTICIPADA
-        # ====================================================
-        if tipo == "MANUAL":
-
-            descripcion = payload.get("descripcion")
-            total = payload.get("total")
-
-            if not descripcion:
-                raise HTTPException(400, "Descripción requerida")
-
-            try:
-                total = float(total)
-                if total <= 0:
-                    raise ValueError
-            except Exception:
-                raise HTTPException(400, "Total inválido")
-
-            moneda = payload.get("moneda", "USD")
-            termino_pago = int(payload.get("termino_pago", 0))
-            fecha_emision = date.today()
-
-            # ====================================================
-            # NUMERACIÓN CORRECTA
-            # → SOLO FACTURAS MANUALES
-            # → SI NO HAY REGISTROS → 2201
-            # ====================================================
-            cur.execute("""
-                SELECT COALESCE(
-                    MAX(numero_documento::int),
-                    2200
-                ) AS ultimo
-                FROM invoicing
-                WHERE
-                    tipo_documento = 'FACTURA'
-                    AND tipo_factura = 'MANUAL'
-                    AND numero_documento ~ '^[0-9]+$'
-            """)
-
-            ultimo = cur.fetchone()["ultimo"]
-            numero_factura = int(ultimo) + 1
-
-            # ====================================================
-            # GENERAR PDF (SNAPSHOT COMPLETO)
-            # ====================================================
-            from services.pdf.factura_manual_pdf import generar_factura_manual_pdf
-
-            pdf_data = {
-                "numero_factura": numero_factura,
-                "fecha_factura": fecha_emision,
-                "cliente": nombre_cliente,
-                "buque": payload.get("buque"),
-                "operacion": payload.get("operacion"),
-                "num_informe": payload.get("num_informe"),
-                "periodo": payload.get("periodo_operacion"),
-                "descripcion": descripcion,
-                "moneda": moneda,
-                "termino_pago": termino_pago,
-                "total": total
-            }
-
-            pdf_path = generar_factura_manual_pdf(pdf_data)
-
-            # ====================================================
-            # INSERT → SOLO CAMPOS EXISTENTES EN invoicing
-            # ====================================================
-            cur.execute("""
-                INSERT INTO invoicing (
-                    factura_id,
-                    tipo_factura,
-                    tipo_documento,
-                    numero_documento,
-                    codigo_cliente,
-                    nombre_cliente,
-                    fecha_emision,
-                    moneda,
-                    total,
-                    estado,
-                    pdf_path,
-                    created_at,
-                    num_informe,
-                    termino_pago,
-                    buque_contenedor,
-                    operacion,
-                    periodo_operacion,
-                    descripcion_servicio
-                )
-                VALUES (
-                    NULL,
-                    'MANUAL',
-                    'FACTURA',
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    'EMITIDA',
-                    %s,
-                    NOW(),
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s
-                )
-                RETURNING id
-            """, (
-                str(numero_factura),
-                codigo_cliente,
-                nombre_cliente,
-                fecha_emision,
-                moneda,
-                total,
-                pdf_path,
-                payload.get("num_informe"),
-                termino_pago,
-                payload.get("buque"),
-                payload.get("operacion"),
-                payload.get("periodo_operacion"),
-                descripcion
-            ))
-
-            factura_id = cur.fetchone()["id"]
-            conn.commit()
-
-            return {
-                "status": "ok",
-                "factura_id": factura_id,
-                "numero_documento": numero_factura,
-                "pdf_path": pdf_path
-            }
-
-        # ====================================================
-        # FACTURA XML ANTICIPADA (SIN NUMERACIÓN MANUAL)
-        # ====================================================
-        else:
-
-            xml_path = payload.get("xml_path")
-            if not xml_path:
-                raise HTTPException(400, "xml_path requerido")
-
-            from services.factura_electronica_parser import parse_factura_electronica
-            data = parse_factura_electronica(xml_path)
-
-            cur.execute("""
-                INSERT INTO invoicing (
-                    factura_id,
-                    tipo_factura,
-                    tipo_documento,
-                    numero_documento,
-                    codigo_cliente,
-                    nombre_cliente,
-                    fecha_emision,
-                    moneda,
-                    total,
-                    estado,
-                    created_at,
-                    num_informe,
-                    termino_pago,
-                    buque_contenedor,
-                    operacion,
-                    periodo_operacion,
-                    descripcion_servicio
-                )
-                VALUES (
-                    NULL,
-                    'ELECTRONICA',
-                    'FACTURA',
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    'EMITIDA',
-                    NOW(),
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s
-                )
-            """, (
-                data["numero_factura"],   # STRING
-                codigo_cliente,
-                nombre_cliente,
-                data["fecha_emision"],
-                data["moneda"],
-                data["total"],
-                data.get("num_informe"),
-                data.get("termino_pago"),
-                data.get("buque"),
-                data.get("operacion"),
-                data.get("periodo_operacion"),
-                "Factura electrónica cargada desde XML"
-            ))
-
-            conn.commit()
-            return {"status": "ok"}
-
-    except HTTPException:
-        conn.rollback()
-        raise
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(500, f"Error facturación anticipada: {str(e)}")
     finally:
         cur.close()
 
@@ -653,242 +418,38 @@ def emitir_nota_credito(
     finally:
         cur.close()
 
-@router.post("/anticipada")
-def emitir_factura_anticipada(
-    tipo_factura: str = Form(...),                     # MANUAL | XML
-    codigo_cliente: str = Form(...),
-    nombre_cliente: str = Form(...),
+import requests
 
-    # ---------- MANUAL ----------
-    descripcion: Optional[str] = Form(None),
-    total: Optional[float] = Form(None),
-    moneda: Optional[str] = Form("USD"),
-    termino_pago: Optional[int] = Form(0),
-    num_informe: Optional[str] = Form(None),
-    buque: Optional[str] = Form(None),
-    operacion: Optional[str] = Form(None),
-    periodo_operacion: Optional[str] = Form(None),
-
-    # ---------- XML ----------
-    file: Optional[UploadFile] = File(None),
-
-    conn=Depends(get_db)
+def post_invoicing_anticipada_xml_api(
+    codigo_cliente: str,
+    nombre_cliente: str,
+    xml_path: str
 ):
-    """
-    FACTURA ANTICIPADA
-    - MANUAL → genera número + PDF manual
-    - XML    → lee XML subido, genera PDF espejo, guarda snapshot
-    """
-
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-
-    try:
-        if tipo_factura not in ("MANUAL", "XML"):
-            raise HTTPException(400, "tipo_factura inválido")
-
-        if not codigo_cliente or not nombre_cliente:
-            raise HTTPException(400, "Cliente requerido")
-
-        # ============================================================
-        # ===================== MANUAL ===============================
-        # ============================================================
-        if tipo_factura == "MANUAL":
-
-            if not descripcion:
-                raise HTTPException(400, "Descripción requerida")
-
-            if total is None or total <= 0:
-                raise HTTPException(400, "Total inválido")
-
-            # ---------- Numeración ----------
-            cur.execute("""
-                SELECT COALESCE(
-                    MAX(numero_documento::int),
-                    2200
-                ) AS ultimo
-                FROM invoicing
-                WHERE tipo_documento = 'FACTURA'
-                  AND tipo_factura = 'MANUAL'
-                  AND numero_documento ~ '^[0-9]+$'
-            """)
-            numero_factura = int(cur.fetchone()["ultimo"]) + 1
-
-            fecha_emision = date.today()
-
-            # ---------- PDF ----------
-            from services.pdf.factura_manual_pdf import generar_factura_manual_pdf
-
-            pdf_path = generar_factura_manual_pdf({
-                "numero_factura": numero_factura,
-                "fecha_factura": fecha_emision,
-                "cliente": nombre_cliente,
-                "buque": buque,
-                "operacion": operacion,
-                "num_informe": num_informe,
-                "periodo": periodo_operacion,
-                "descripcion": descripcion,
-                "moneda": moneda,
-                "termino_pago": termino_pago,
-                "total": total
-            })
-
-            # ---------- INSERT ----------
-            cur.execute("""
-                INSERT INTO invoicing (
-                    factura_id,
-                    tipo_factura,
-                    tipo_documento,
-                    numero_documento,
-                    codigo_cliente,
-                    nombre_cliente,
-                    fecha_emision,
-                    moneda,
-                    total,
-                    estado,
-                    pdf_path,
-                    created_at,
-                    num_informe,
-                    termino_pago,
-                    buque_contenedor,
-                    operacion,
-                    periodo_operacion,
-                    descripcion_servicio
-                )
-                VALUES (
-                    NULL,
-                    'MANUAL',
-                    'FACTURA',
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    'EMITIDA',
-                    %s,
-                    NOW(),
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s
-                )
-                RETURNING id
-            """, (
-                str(numero_factura),
-                codigo_cliente,
-                nombre_cliente,
-                fecha_emision,
-                moneda,
-                total,
-                pdf_path,
-                num_informe,
-                termino_pago,
-                buque,
-                operacion,
-                periodo_operacion,
-                descripcion
-            ))
-
-            factura_id = cur.fetchone()["id"]
-            conn.commit()
-
-            return {
-                "status": "ok",
-                "factura_id": factura_id,
-                "numero_documento": numero_factura,
-                "pdf_path": pdf_path
-            }
-
-        # ============================================================
-        # ====================== XML =================================
-        # ============================================================
-        else:
-
-            if not file:
-                raise HTTPException(400, "Archivo XML requerido")
-
-            # ---------- Leer XML ----------
-            xml_bytes = file.file.read()
-
-            from services.factura_electronica_parser import (
-                parse_factura_electronica_from_bytes
+    with open(xml_path, "rb") as f:
+        files = {
+            "file": (
+                xml_path.split("/")[-1],
+                f,
+                "application/xml"
             )
+        }
 
-            data = parse_factura_electronica_from_bytes(xml_bytes)
+        data = {
+            "tipo_factura": "XML",
+            "codigo_cliente": codigo_cliente,
+            "nombre_cliente": nombre_cliente
+        }
 
-            # ---------- PDF espejo ----------
-            os.makedirs("/tmp/pdf", exist_ok=True)
+        r = requests.post(
+            f"{BASE_URL}/invoicing/anticipada",
+            data=data,      # 👈 Form(...)
+            files=files,    # 👈 UploadFile
+            timeout=30
+        )
 
-            from services.pdf.factura_xml_pdf import generar_factura_xml_pdf
+        # DEBUG ÚTIL SI FALLA
+        if r.status_code == 422:
+            raise Exception(r.text)
 
-            pdf_path = generar_factura_xml_pdf({
-                "numero_factura": data["numero_factura"],
-                "fecha_emision": data["fecha_emision"],
-                "nombre_cliente": nombre_cliente,
-                "moneda": data["moneda"],
-                "total": data["total"]
-            })
-
-            # ---------- INSERT ----------
-            cur.execute("""
-                INSERT INTO invoicing (
-                    factura_id,
-                    tipo_factura,
-                    tipo_documento,
-                    numero_documento,
-                    codigo_cliente,
-                    nombre_cliente,
-                    fecha_emision,
-                    moneda,
-                    total,
-                    estado,
-                    pdf_path,
-                    created_at,
-                    descripcion_servicio
-                )
-                VALUES (
-                    NULL,
-                    'ELECTRONICA',
-                    'FACTURA',
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    'EMITIDA',
-                    %s,
-                    NOW(),
-                    'Factura electrónica cargada desde XML'
-                )
-                RETURNING id
-            """, (
-                data["numero_factura"],
-                codigo_cliente,
-                nombre_cliente,
-                data["fecha_emision"],
-                data["moneda"],
-                data["total"],
-                pdf_path
-            ))
-
-            factura_id = cur.fetchone()["id"]
-            conn.commit()
-
-            return {
-                "status": "ok",
-                "factura_id": factura_id,
-                "numero_documento": data["numero_factura"],
-                "pdf_path": pdf_path
-            }
-
-    except HTTPException:
-        conn.rollback()
-        raise
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(500, f"Error facturación anticipada: {str(e)}")
-    finally:
-        cur.close()
+        r.raise_for_status()
+        return r.json()

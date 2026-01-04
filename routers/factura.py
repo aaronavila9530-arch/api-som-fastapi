@@ -571,7 +571,7 @@ def crear_factura_electronica(
                 terminos_pago = %s
             WHERE consec = %s
         """, (
-            invoicing_id,          -- 🔑 asociación REAL
+            invoicing_id,        
             total,
             fecha_emision,
             termino_pago,

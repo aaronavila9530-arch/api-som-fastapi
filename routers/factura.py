@@ -5,7 +5,8 @@ from fastapi import (
     Header,
     UploadFile,
     File,
-    Form
+    Form,
+    Query
 )
 
 from psycopg2.extras import RealDictCursor

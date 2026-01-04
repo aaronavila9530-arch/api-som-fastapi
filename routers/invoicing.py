@@ -484,19 +484,19 @@ def emitir_nota_credito(
         # ====================================================
         else:
 
-            file: UploadFile = payload.get("file")
+            file = payload.get("file")
 
             if not file:
                 raise HTTPException(400, "Archivo XML requerido")
 
-            if not file.filename.lower().endswith(".xml"):
+            filename = file.filename.lower()
+            if not filename.endswith(".xml"):
                 raise HTTPException(400, "El archivo debe ser XML")
 
             # ------------------------------------------------
-            # Leer XML desde memoria (NO usar paths locales)
+            # Leer XML desde memoria (NO PATH)
             # ------------------------------------------------
             xml_bytes = file.file.read()
-
             if not xml_bytes:
                 raise HTTPException(400, "Archivo XML vacío")
 
@@ -504,15 +504,6 @@ def emitir_nota_credito(
             # Parse XML (NC / NCE)
             # ------------------------------------------------
             data = parse_electronic_document_from_bytes(xml_bytes)
-
-            # Esperado:
-            # {
-            #   tipo_documento: "NC" | "NCE",
-            #   numero_documento,
-            #   fecha_emision,
-            #   moneda,
-            #   total
-            # }
 
             if data.get("tipo_documento") not in ("NC", "NCE"):
                 raise HTTPException(
@@ -523,14 +514,7 @@ def emitir_nota_credito(
             # ------------------------------------------------
             # Validaciones duras
             # ------------------------------------------------
-            required_fields = (
-                "numero_documento",
-                "fecha_emision",
-                "moneda",
-                "total"
-            )
-
-            for field in required_fields:
+            for field in ("numero_documento", "fecha_emision", "moneda", "total"):
                 if not data.get(field):
                     raise HTTPException(
                         400,

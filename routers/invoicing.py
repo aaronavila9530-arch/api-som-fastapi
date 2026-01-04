@@ -203,34 +203,7 @@ def emitir_factura(
 # FACTURA ANTICIPADA (NO LIGADA A SERVICIO)
 # ============================================================
 @router.post("/anticipada")
-def emitir_factura_anticipada(
-    payload: dict,
-    conn=Depends(get_db)
-):
-    """
-    payload esperado (MANUAL):
-    {
-        tipo_factura: "MANUAL",
-        codigo_cliente,
-        nombre_cliente,
-        num_informe,
-        buque,
-        operacion,
-        periodo_operacion,
-        descripcion,
-        moneda,
-        termino_pago,
-        total
-    }
-
-    payload esperado (XML):
-    {
-        tipo_factura: "XML",
-        codigo_cliente,
-        nombre_cliente,
-        xml_path
-    }
-    """
+def emitir_factura_anticipada(payload: dict, conn=Depends(get_db)):
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -246,9 +219,9 @@ def emitir_factura_anticipada(
         if not codigo_cliente or not nombre_cliente:
             raise HTTPException(400, "Cliente requerido")
 
-        # ====================================================
+        # ==========================================================
         # FACTURA ANTICIPADA MANUAL
-        # ====================================================
+        # ==========================================================
         if tipo == "MANUAL":
 
             descripcion = payload.get("descripcion")
@@ -257,20 +230,17 @@ def emitir_factura_anticipada(
             if not descripcion:
                 raise HTTPException(400, "Descripción requerida")
 
-            try:
-                total = float(total)
-                if total <= 0:
-                    raise ValueError
-            except Exception:
+            total = float(total)
+            if total <= 0:
                 raise HTTPException(400, "Total inválido")
 
             moneda = payload.get("moneda", "USD")
             termino_pago = int(payload.get("termino_pago", 0))
+            fecha_emision = date.today()
 
-            # ====================================================
-            # NUMERACIÓN CORRECTA (SOLO FACTURAS MANUALES)
-            # IGNORA XML COMPLETAMENTE
-            # ====================================================
+            # ======================================================
+            # CONSECUTIVO SEGURO (SOLO MANUAL)
+            # ======================================================
             cur.execute("""
                 SELECT COALESCE(
                     MAX(numero_documento::int),
@@ -278,22 +248,19 @@ def emitir_factura_anticipada(
                 ) AS ultimo
                 FROM invoicing
                 WHERE
-                    tipo_documento = 'FACTURA'
-                    AND tipo_factura = 'MANUAL'
+                    tipo_factura = 'MANUAL'
+                    AND tipo_documento = 'FACTURA'
                     AND numero_documento ~ '^[0-9]+$'
-                    AND length(numero_documento) <= 10
             """)
-            numero_factura = int(cur.fetchone()["ultimo"]) + 1
+            numero_documento = int(cur.fetchone()["ultimo"]) + 1
 
-            fecha_emision = date.today()
-
-            # ====================================================
+            # ======================================================
             # GENERAR PDF
-            # ====================================================
+            # ======================================================
             from services.pdf.factura_manual_pdf import generar_factura_manual_pdf
 
             pdf_data = {
-                "numero_factura": numero_factura,
+                "numero_factura": numero_documento,
                 "fecha_factura": fecha_emision,
                 "cliente": nombre_cliente,
                 "buque": payload.get("buque"),
@@ -308,9 +275,9 @@ def emitir_factura_anticipada(
 
             pdf_path = generar_factura_manual_pdf(pdf_data)
 
-            # ====================================================
-            # INSERT INVOICING (SNAPSHOT COMPLETO)
-            # ====================================================
+            # ======================================================
+            # INSERT SNAPSHOT INVOICING
+            # ======================================================
             cur.execute("""
                 INSERT INTO invoicing (
                     factura_id,
@@ -353,7 +320,7 @@ def emitir_factura_anticipada(
                 )
                 RETURNING id
             """, (
-                str(numero_factura),
+                str(numero_documento),
                 codigo_cliente,
                 nombre_cliente,
                 fecha_emision,
@@ -374,13 +341,13 @@ def emitir_factura_anticipada(
             return {
                 "status": "ok",
                 "factura_id": factura_id,
-                "numero_documento": numero_factura,
+                "numero_documento": numero_documento,
                 "pdf_path": pdf_path
             }
 
-        # ====================================================
-        # FACTURA ANTICIPADA XML (SIN CAST A INT)
-        # ====================================================
+        # ==========================================================
+        # FACTURA XML
+        # ==========================================================
         else:
 
             xml_path = payload.get("xml_path")
@@ -429,7 +396,7 @@ def emitir_factura_anticipada(
                     %s
                 )
             """, (
-                data["numero_factura"],   # STRING, NO INT
+                data["numero_factura"],
                 codigo_cliente,
                 nombre_cliente,
                 data["fecha_emision"],
@@ -446,15 +413,10 @@ def emitir_factura_anticipada(
             conn.commit()
             return {"status": "ok"}
 
-    except HTTPException:
-        conn.rollback()
-        raise
     except Exception as e:
         conn.rollback()
-        raise HTTPException(
-            500,
-            f"Error facturación anticipada: {str(e)}"
-        )
+        raise HTTPException(500, f"Error facturación anticipada: {str(e)}")
+
     finally:
         cur.close()
 

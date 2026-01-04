@@ -536,7 +536,6 @@ def emitir_nota_credito(
         )
     finally:
         cur.close()
-
 @router.post("/anticipada/xml")
 def emitir_factura_anticipada_xml(
     codigo_cliente: str = Form(...),
@@ -544,17 +543,41 @@ def emitir_factura_anticipada_xml(
     file: UploadFile = File(...),
     conn=Depends(get_db)
 ):
+    from psycopg2.extras import RealDictCursor
+    import os
+
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
+        # =====================================================
+        # VALIDACIONES
+        # =====================================================
+        if not codigo_cliente or not nombre_cliente:
+            raise HTTPException(400, "Cliente requerido")
+
+        if not file.filename.lower().endswith(".xml"):
+            raise HTTPException(400, "El archivo debe ser XML")
+
+        # =====================================================
+        # LEER XML
+        # =====================================================
         xml_bytes = file.file.read()
+        if not xml_bytes:
+            raise HTTPException(400, "XML vacío")
 
         from services.factura_electronica_parser import (
             parse_factura_electronica_from_bytes
         )
+
         data = parse_factura_electronica_from_bytes(xml_bytes)
 
+        # =====================================================
+        # GENERAR PDF (ASEGURAR DIRECTORIO)
+        # =====================================================
+        os.makedirs("/tmp/pdf", exist_ok=True)
+
         from services.pdf.factura_xml_pdf import generar_factura_xml_pdf
+
         pdf_path = generar_factura_xml_pdf({
             "numero_factura": data["numero_factura"],
             "fecha_emision": data["fecha_emision"],
@@ -563,6 +586,9 @@ def emitir_factura_anticipada_xml(
             "total": data["total"]
         })
 
+        # =====================================================
+        # INSERT
+        # =====================================================
         cur.execute("""
             INSERT INTO invoicing (
                 factura_id,
@@ -615,8 +641,11 @@ def emitir_factura_anticipada_xml(
             "pdf_path": pdf_path
         }
 
+    except HTTPException:
+        conn.rollback()
+        raise
     except Exception as e:
         conn.rollback()
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, f"XML anticipada error: {str(e)}")
     finally:
         cur.close()

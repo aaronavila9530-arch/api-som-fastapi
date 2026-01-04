@@ -482,27 +482,37 @@ def emitir_nota_credito(
         # ====================================================
         # NC XML (NACIONAL / EXPORTACIÓN)
         # ====================================================
-        if tipo_factura == "XML":
+        else:
 
-            if not file or not file.filename:
-                raise HTTPException(400, "Archivo XML requerido")
+            xml_path = payload.get("xml_path")
+            if not xml_path:
+                raise HTTPException(400, "xml_path requerido")
 
-            if not file.filename.lower().endswith(".xml"):
-                raise HTTPException(400, "El archivo debe ser XML")
+            # ------------------------------------------------
+            # Parse XML REAL (NC / NCE)
+            # ------------------------------------------------
+            data = parse_electronic_document(xml_path)
 
-            xml_bytes = file.file.read()
-            if not xml_bytes:
-                raise HTTPException(400, "Archivo XML vacío")
+            # data esperado:
+            # {
+            #   "tipo_documento": "NC" | "NCE",
+            #   "numero_documento": str,
+            #   "fecha_emision": date,
+            #   "moneda": str,
+            #   "total": float
+            # }
 
-            # PARSER REAL
-            data = parse_electronic_document(xml_bytes)
+            tipo_documento = data.get("tipo_documento")
 
-            if data.get("tipo_documento") not in ("NC", "NCE"):
+            if tipo_documento not in ("NC", "NCE"):
                 raise HTTPException(
                     400,
                     "El XML no corresponde a una Nota de Crédito electrónica"
                 )
 
+            # ------------------------------------------------
+            # Validaciones duras
+            # ------------------------------------------------
             for field in ("numero_documento", "fecha_emision", "moneda", "total"):
                 if not data.get(field):
                     raise HTTPException(
@@ -510,10 +520,16 @@ def emitir_nota_credito(
                         f"XML inválido: falta {field}"
                     )
 
-            total = float(data["total"])
-            if total <= 0:
+            try:
+                total = float(data["total"])
+                if total <= 0:
+                    raise ValueError
+            except Exception:
                 raise HTTPException(400, "Total inválido en XML")
 
+            # ------------------------------------------------
+            # INSERT INVOICING
+            # ------------------------------------------------
             cur.execute("""
                 INSERT INTO invoicing (
                     factura_id,
@@ -558,7 +574,7 @@ def emitir_nota_credito(
                 "status": "ok",
                 "nota_credito_id": nc_id,
                 "numero_documento": data["numero_documento"],
-                "tipo_xml": data["tipo_documento"]
+                "tipo_xml": tipo_documento
             }
 
     except HTTPException:

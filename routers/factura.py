@@ -363,24 +363,39 @@ def crear_factura_electronica(
         if not servicio:
             raise HTTPException(404, "Servicio no encontrado")
 
+        if servicio.get("factura"):
+            raise HTTPException(400, "El servicio ya fue facturado")
+
         # ====================================================
-        # 2️⃣ PARSEAR XML (BACKEND ONLY)
+        # 2️⃣ PARSEAR XML (BLINDADO)
         # ====================================================
         xml_bytes = file.file.read()
         data_xml = parse_factura_electronica_from_bytes(xml_bytes)
 
-        numero_documento = data_xml["numero_factura"]
-        fecha_emision = data_xml["fecha_emision"]
-        moneda = data_xml["moneda"]
-        total = data_xml["total"]
-        termino_pago = int(data_xml.get("termino_pago") or 0)
+        numero_documento = data_xml.get("numero_factura")
+        if not numero_documento:
+            raise HTTPException(400, "XML inválido: número de factura ausente")
+
+        moneda = data_xml.get("moneda") or "CRC"
+        total = float(data_xml.get("total") or 0)
+
+        fecha_emision = (
+            data_xml.get("fecha_emision")
+            or datetime.now().date()
+        )
+
+        # termino_pago puede venir None, "", "15.00", etc
+        try:
+            termino_pago = int(float(data_xml.get("termino_pago")))
+        except (TypeError, ValueError):
+            termino_pago = 0
 
         # ====================================================
-        # 3️⃣ GENERAR PDF TEMPORAL (PREVIEW)
+        # 3️⃣ GENERAR PDF PREVIEW (OPCIONAL, NUNCA ROMPE)
         # ====================================================
         pdf_path = None
         try:
-            tmp_name = f"/tmp/factura_preview_{uuid.uuid4().hex}.pdf"
+            tmp_path = f"/tmp/factura_preview_{uuid.uuid4().hex}.pdf"
             pdf_path = generar_factura_preview_pdf(
                 {
                     "numero_documento": numero_documento,
@@ -392,10 +407,10 @@ def crear_factura_electronica(
                     "moneda": moneda,
                     "total": total
                 },
-                output_path=tmp_name
+                output_path=tmp_path
             )
         except Exception:
-            pdf_path = None  # preview es opcional
+            pdf_path = None
 
         # ====================================================
         # 4️⃣ INSERTAR SOLO EN INVOICING
@@ -459,6 +474,26 @@ def crear_factura_electronica(
         ))
 
         invoicing_id = cur.fetchone()["id"]
+
+        # ====================================================
+        # 5️⃣ BLOQUEAR SERVICIO → DESAPARECE DE INVOICING UI
+        # ====================================================
+        cur.execute("""
+            UPDATE servicios
+            SET
+                factura = %s,
+                valor_factura = %s,
+                fecha_factura = %s,
+                terminos_pago = %s
+            WHERE consec = %s
+        """, (
+            numero_documento,
+            total,
+            fecha_emision,
+            termino_pago,
+            servicio_id
+        ))
+
         conn.commit()
 
         return {

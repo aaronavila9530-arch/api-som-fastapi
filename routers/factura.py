@@ -445,24 +445,22 @@ def crear_factura_electronica(
 from fastapi import Query
 from datetime import date
 
-# ============================================================
-# PREVIEW INFO (cliente -> cliente_credito)
-# ============================================================
-@router.get("/preview-info")
-def get_factura_preview_info(
-    nombre_cliente: str | None = Query(None),
+
+
+
+
+
+@router.get("/termino-pago")
+def get_termino_pago_cliente(
+    nombre_cliente: str = Query(..., description="nombrecomercial del cliente"),
     conn=Depends(get_db)
 ):
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        nombre = (nombre_cliente or "").strip()
-        if not nombre:
-            return {
-                "termino_pago": None
-            }
+        nombre = nombre_cliente.strip()
 
-        # 1) Resolver codigo_cliente
+        # 1️⃣ Resolver código desde cliente
         cur.execute("""
             SELECT codigo
             FROM cliente
@@ -471,15 +469,16 @@ def get_factura_preview_info(
             LIMIT 1
         """, (nombre, nombre))
 
-        row_cliente = cur.fetchone()
-        if not row_cliente:
-            return {
-                "termino_pago": None
-            }
+        cliente = cur.fetchone()
+        if not cliente:
+            raise HTTPException(
+                status_code=404,
+                detail="Cliente no encontrado en tabla cliente"
+            )
 
-        codigo_cliente = row_cliente["codigo"]
+        codigo_cliente = cliente["codigo"]
 
-        # 2) Buscar termino_pago
+        # 2️⃣ Obtener término de pago desde cliente_credito
         cur.execute("""
             SELECT termino_pago
             FROM cliente_credito
@@ -487,11 +486,17 @@ def get_factura_preview_info(
             LIMIT 1
         """, (codigo_cliente,))
 
-        row_credito = cur.fetchone()
+        credito = cur.fetchone()
+        if not credito or credito["termino_pago"] is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Cliente sin término de pago configurado"
+            )
 
         return {
             "codigo_cliente": codigo_cliente,
-            "termino_pago": row_credito["termino_pago"] if row_credito else None
+            "termino_pago": int(credito["termino_pago"]),
+            "fecha_emision": date.today().isoformat()
         }
 
     finally:

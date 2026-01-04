@@ -11,7 +11,7 @@ from rbac_service import has_permission
 from services.xml.factura_electronica_parser import (
     parse_factura_electronica_from_bytes
 )
-from services.pdf.factura_preview_pdf import generar_factura_preview_pdf  # opcional
+from services.pdf.factura_preview_pdf import generar_factura_preview_pdf
 
 router = APIRouter(
     prefix="/factura",

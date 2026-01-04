@@ -10,7 +10,8 @@ from datetime import date
 
 from database import get_db
 from rbac_service import has_permission
-
+from typing import Optional
+import os
 
 router = APIRouter(
     prefix="/invoicing",
@@ -655,17 +656,17 @@ def emitir_factura_anticipada(
     nombre_cliente: str = Form(...),
 
     # ---------- MANUAL ----------
-    descripcion: str | None = Form(None),
-    total: float | None = Form(None),
-    moneda: str | None = Form("USD"),
-    termino_pago: int | None = Form(0),
-    num_informe: str | None = Form(None),
-    buque: str | None = Form(None),
-    operacion: str | None = Form(None),
-    periodo_operacion: str | None = Form(None),
+    descripcion: Optional[str] = Form(None),
+    total: Optional[float] = Form(None),
+    moneda: Optional[str] = Form("USD"),
+    termino_pago: Optional[int] = Form(0),
+    num_informe: Optional[str] = Form(None),
+    buque: Optional[str] = Form(None),
+    operacion: Optional[str] = Form(None),
+    periodo_operacion: Optional[str] = Form(None),
 
     # ---------- XML ----------
-    file: UploadFile | None = File(None),
+    file: Optional[UploadFile] = File(None),
 
     conn=Depends(get_db)
 ):

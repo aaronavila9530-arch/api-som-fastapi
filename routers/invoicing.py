@@ -543,39 +543,44 @@ def emitir_factura_anticipada_xml(
     file: UploadFile = File(...),
     conn=Depends(get_db)
 ):
-    from psycopg2.extras import RealDictCursor
-    import os
-
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        # =====================================================
-        # VALIDACIONES
-        # =====================================================
-        if not codigo_cliente or not nombre_cliente:
-            raise HTTPException(400, "Cliente requerido")
-
-        if not file.filename.lower().endswith(".xml"):
-            raise HTTPException(400, "El archivo debe ser XML")
-
-        # =====================================================
-        # LEER XML
-        # =====================================================
+        # ====================================================
+        # 1️⃣ Leer XML
+        # ====================================================
         xml_bytes = file.file.read()
+
         if not xml_bytes:
             raise HTTPException(400, "XML vacío")
 
+        # ====================================================
+        # 2️⃣ Parsear XML
+        # ====================================================
         from services.factura_electronica_parser import (
             parse_factura_electronica_from_bytes
         )
 
         data = parse_factura_electronica_from_bytes(xml_bytes)
 
-        # =====================================================
-        # GENERAR PDF (ASEGURAR DIRECTORIO)
-        # =====================================================
+        # ====================================================
+        # 3️⃣ Asegurar carpetas (/tmp SIEMPRE)
+        # ====================================================
         os.makedirs("/tmp/pdf", exist_ok=True)
+        os.makedirs("/tmp/xml", exist_ok=True)
 
+        # ====================================================
+        # 4️⃣ Guardar snapshot XML (opcional pero recomendado)
+        # ====================================================
+        xml_filename = f"Factura_{data['numero_factura']}.xml"
+        xml_path = f"/tmp/xml/{xml_filename}"
+
+        with open(xml_path, "wb") as f:
+            f.write(xml_bytes)
+
+        # ====================================================
+        # 5️⃣ Generar PDF espejo
+        # ====================================================
         from services.pdf.factura_xml_pdf import generar_factura_xml_pdf
 
         pdf_path = generar_factura_xml_pdf({
@@ -586,9 +591,9 @@ def emitir_factura_anticipada_xml(
             "total": data["total"]
         })
 
-        # =====================================================
-        # INSERT
-        # =====================================================
+        # ====================================================
+        # 6️⃣ Insert invoicing
+        # ====================================================
         cur.execute("""
             INSERT INTO invoicing (
                 factura_id,
@@ -644,8 +649,10 @@ def emitir_factura_anticipada_xml(
     except HTTPException:
         conn.rollback()
         raise
+
     except Exception as e:
         conn.rollback()
-        raise HTTPException(500, f"XML anticipada error: {str(e)}")
+        raise HTTPException(500, f"Error XML anticipada: {str(e)}")
+
     finally:
         cur.close()

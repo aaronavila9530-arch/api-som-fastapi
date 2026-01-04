@@ -332,7 +332,7 @@ def crear_factura_electronica(
     conn=Depends(get_db)
 ):
     # =========================================================
-    # 0️⃣ VALIDACIONES BÁSICAS
+    # 0️⃣ VALIDACIÓN BÁSICA DE ARCHIVO
     # =========================================================
     if not file.filename.lower().endswith(".xml"):
         raise HTTPException(400, "El archivo debe ser XML")
@@ -359,6 +359,7 @@ def crear_factura_electronica(
               ON c.nombrecomercial = s.cliente
               OR c.nombrejuridico = s.cliente
             WHERE s.consec = %s
+            FOR UPDATE
         """, (servicio_id,))
 
         servicio = cur.fetchone()
@@ -366,16 +367,16 @@ def crear_factura_electronica(
             raise HTTPException(404, "Servicio no encontrado")
 
         # =====================================================
-        # 2️⃣ VALIDAR FACTURA ASOCIADA REAL
+        # 2️⃣ BLOQUEO REAL (SERVICIO YA FACTURADO)
         # =====================================================
         if servicio["factura"] is not None:
             raise HTTPException(
                 400,
-                "Este servicio ya tiene una factura asociada"
+                f"Servicio {servicio_id} ya tiene una factura asociada"
             )
 
         # =====================================================
-        # 3️⃣ PARSEAR XML (FE / FEE – TOLERANTE)
+        # 3️⃣ PARSEAR XML (FE / FEE)
         # =====================================================
         xml_bytes = file.file.read()
         data_xml = parse_factura_electronica_from_bytes(xml_bytes)
@@ -388,13 +389,35 @@ def crear_factura_electronica(
         if not numero_documento:
             raise HTTPException(
                 400,
-                "XML inválido: no se pudo obtener número ni clave"
+                "XML inválido: no se pudo obtener número de factura"
             )
 
+        # =====================================================
+        # 4️⃣ VALIDAR DUPLICADO FISCAL (BLINDAJE REAL)
+        # =====================================================
+        cur.execute("""
+            SELECT id
+            FROM invoicing
+            WHERE
+                numero_documento = %s
+                AND tipo_documento = 'FACTURA'
+                AND estado <> 'ANULADA'
+            LIMIT 1
+        """, (numero_documento,))
+
+        if cur.fetchone():
+            raise HTTPException(
+                400,
+                f"La factura {numero_documento} ya está registrada"
+            )
+
+        # =====================================================
+        # 5️⃣ NORMALIZAR DATOS
+        # =====================================================
         moneda = data_xml.get("moneda") or "CRC"
 
         try:
-            total = float(data_xml.get("total") or 0)
+            total = float(data_xml.get("total"))
         except (TypeError, ValueError):
             raise HTTPException(400, "XML inválido: total no numérico")
 
@@ -409,8 +432,10 @@ def crear_factura_electronica(
         except (TypeError, ValueError):
             termino_pago = 0
 
+        tipo_xml = data_xml.get("tipo_xml", "FE")
+
         # =====================================================
-        # 4️⃣ PDF PREVIEW (NO BLOQUEANTE)
+        # 6️⃣ PDF PREVIEW (NO BLOQUEANTE)
         # =====================================================
         pdf_path = None
         try:
@@ -429,10 +454,10 @@ def crear_factura_electronica(
                 output_path=tmp_pdf
             )
         except Exception:
-            pdf_path = None  # preview es opcional
+            pdf_path = None
 
         # =====================================================
-        # 5️⃣ INSERTAR EN INVOICING
+        # 7️⃣ INSERTAR EN INVOICING
         # =====================================================
         cur.execute("""
             INSERT INTO invoicing (
@@ -457,7 +482,7 @@ def crear_factura_electronica(
             )
             VALUES (
                 NULL,
-                'ELECTRONICA',
+                %s,
                 'FACTURA',
                 %s,
                 %s,
@@ -477,6 +502,7 @@ def crear_factura_electronica(
             )
             RETURNING id
         """, (
+            "ELECTRONICA",
             numero_documento,
             servicio["codigo_cliente"],
             servicio["cliente"],
@@ -489,13 +515,13 @@ def crear_factura_electronica(
             servicio["buque_contenedor"],
             servicio["operacion"],
             f"{servicio['fecha_inicio']} a {servicio['fecha_fin']}",
-            "Factura electrónica cargada desde XML"
+            f"Factura electrónica ({tipo_xml}) cargada desde XML"
         ))
 
         invoicing_id = cur.fetchone()["id"]
 
         # =====================================================
-        # 6️⃣ ASOCIAR FACTURA AL SERVICIO (FUENTE DE VERDAD)
+        # 8️⃣ ASOCIAR FACTURA AL SERVICIO (FUENTE DE VERDAD)
         # =====================================================
         cur.execute("""
             UPDATE servicios
@@ -517,6 +543,8 @@ def crear_factura_electronica(
 
         return {
             "status": "ok",
+            "tipo_xml": tipo_xml,
+            "numero_documento": numero_documento,
             "invoicing_id": invoicing_id,
             "pdf_preview": pdf_path
         }
@@ -528,9 +556,11 @@ def crear_factura_electronica(
         conn.rollback()
         raise HTTPException(500, str(e))
     finally:
-        file.file.close()
+        try:
+            file.file.close()
+        except Exception:
+            pass
         cur.close()
-
 
 
 

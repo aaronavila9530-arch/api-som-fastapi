@@ -1,12 +1,9 @@
 import xml.etree.ElementTree as ET
 from io import BytesIO
 
-NS = {
-    "fe": "https://cdn.comprobanteselectronicos.go.cr/xml-schemas/v4.4/facturaElectronica"
-}
 
 # ============================================================
-# PARSER ORIGINAL (POR PATH – NO SE TOCA)
+# PARSER DESDE PATH
 # ============================================================
 def parse_factura_electronica(xml_path: str) -> dict:
     try:
@@ -19,7 +16,7 @@ def parse_factura_electronica(xml_path: str) -> dict:
 
 
 # ============================================================
-# NUEVO PARSER (PARA UploadFile / BYTES)
+# PARSER DESDE BYTES
 # ============================================================
 def parse_factura_electronica_from_bytes(xml_bytes: bytes) -> dict:
     try:
@@ -32,58 +29,76 @@ def parse_factura_electronica_from_bytes(xml_bytes: bytes) -> dict:
 
 
 # ============================================================
-# LÓGICA COMÚN (UNA SOLA FUENTE DE VERDAD)
+# LÓGICA ÚNICA – FE + FEE (SIN NAMESPACE FRÁGIL)
 # ============================================================
 def _parse_root(root) -> dict:
 
-    def get_text(path, default=None):
-        el = root.find(path, NS)
+    # --------------------------------------------------------
+    # Tipo documento
+    # --------------------------------------------------------
+    tag = root.tag.lower()
+    if "facturaelectronicaexportacion" in tag:
+        tipo_xml = "FEE"
+    elif "facturaelectronica" in tag:
+        tipo_xml = "FE"
+    else:
+        raise ValueError("XML no es FE ni FEE")
+
+    # --------------------------------------------------------
+    # Helpers robustos (ignoran namespace)
+    # --------------------------------------------------------
+    def get_text(tag_name, default=None):
+        el = root.find(f".//{{*}}{tag_name}")
         if el is None or el.text is None:
             return default
         return el.text.strip()
 
-    def get_float(path, default=0.0):
+    def get_float(tag_name, default=0.0):
         try:
-            return float(get_text(path))
+            return float(get_text(tag_name))
         except (TypeError, ValueError):
             return default
 
-    fecha_raw = get_text("fe:FechaEmision")
+    # --------------------------------------------------------
+    # Campos principales (FE + FEE)
+    # --------------------------------------------------------
+    fecha_raw = get_text("FechaEmision")
     fecha_emision = fecha_raw[:10] if fecha_raw else None
 
     data = {
-        "clave_electronica": get_text("fe:Clave"),
-        "numero_factura": get_text("fe:NumeroConsecutivo"),
+        "tipo_xml": tipo_xml,
+        "clave_electronica": get_text("Clave"),
+        "numero_factura": get_text("NumeroConsecutivo"),
         "fecha_emision": fecha_emision,
-        "termino_pago": get_text("fe:PlazoCredito"),
-        "moneda": get_text(
-            "fe:ResumenFactura/fe:CodigoTipoMoneda/fe:CodigoMoneda",
-            default="CRC"
-        ),
-        "total": get_float("fe:ResumenFactura/fe:TotalComprobante"),
+        "termino_pago": get_text("PlazoCredito") or get_text("CondicionVenta"),
+        "moneda": get_text("CodigoMoneda", default="CRC"),
+        "total": get_float("TotalComprobante"),
         "detalles": []
     }
 
-    for linea in root.findall("fe:DetalleServicio/fe:LineaDetalle", NS):
+    # --------------------------------------------------------
+    # Detalle líneas (opcional, robusto)
+    # --------------------------------------------------------
+    for linea in root.findall(".//{*}LineaDetalle"):
 
-        def line_text(path, default=None):
-            el = linea.find(path, NS)
+        def line_text(tag_name, default=None):
+            el = linea.find(f".//{{*}}{tag_name}")
             if el is None or el.text is None:
                 return default
             return el.text.strip()
 
-        def line_float(path, default=0.0):
+        def line_float(tag_name, default=0.0):
             try:
-                return float(line_text(path))
+                return float(line_text(tag_name))
             except (TypeError, ValueError):
                 return default
 
         data["detalles"].append({
-            "descripcion": line_text("fe:Detalle", ""),
-            "cantidad": line_float("fe:Cantidad", 0),
-            "precio_unitario": line_float("fe:PrecioUnitario", 0),
-            "impuesto": line_float("fe:Impuesto/fe:Monto", 0),
-            "total_linea": line_float("fe:MontoTotalLinea", 0)
+            "descripcion": line_text("Detalle", ""),
+            "cantidad": line_float("Cantidad", 0),
+            "precio_unitario": line_float("PrecioUnitario", 0),
+            "impuesto": line_float("Monto", 0),
+            "total_linea": line_float("MontoTotalLinea", 0)
         })
 
     return data

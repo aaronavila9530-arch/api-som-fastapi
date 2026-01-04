@@ -327,12 +327,33 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
 
 
 
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from psycopg2.extras import RealDictCursor
+from datetime import datetime
+import uuid
+
+from database import get_db
+from services.xml.factura_electronica_parser import (
+    parse_factura_electronica_from_bytes
+)
+from services.pdf.factura_preview_pdf import generar_factura_preview_pdf
+
+router = APIRouter(
+    prefix="/factura",
+    tags=["Facturación"]
+)
+
+
 @router.post("/electronica")
 def crear_factura_electronica(
     file: UploadFile = File(...),
     servicio_id: int = Form(...),
     conn=Depends(get_db)
 ):
+
+    # ====================================================
+    # 0️⃣ VALIDACIONES BÁSICAS
+    # ====================================================
     if not file.filename.lower().endswith(".xml"):
         raise HTTPException(400, "El archivo debe ser XML")
 
@@ -363,11 +384,25 @@ def crear_factura_electronica(
         if not servicio:
             raise HTTPException(404, "Servicio no encontrado")
 
-        if servicio.get("factura"):
-            raise HTTPException(400, "El servicio ya fue facturado")
+        # ====================================================
+        # 2️⃣ VALIDAR QUE NO EXISTA FACTURA PREVIA (REAL)
+        # ====================================================
+        cur.execute("""
+            SELECT 1
+            FROM invoicing
+            WHERE num_informe = %s
+              AND tipo_documento = 'FACTURA'
+            LIMIT 1
+        """, (servicio["num_informe"],))
+
+        if cur.fetchone():
+            raise HTTPException(
+                400,
+                "Este servicio ya tiene una factura registrada"
+            )
 
         # ====================================================
-        # 2️⃣ PARSEAR XML (BLINDADO)
+        # 3️⃣ PARSEAR XML (BACKEND = ÚNICA FUENTE)
         # ====================================================
         xml_bytes = file.file.read()
         data_xml = parse_factura_electronica_from_bytes(xml_bytes)
@@ -384,14 +419,13 @@ def crear_factura_electronica(
             or datetime.now().date()
         )
 
-        # termino_pago puede venir None, "", "15.00", etc
         try:
             termino_pago = int(float(data_xml.get("termino_pago")))
         except (TypeError, ValueError):
             termino_pago = 0
 
         # ====================================================
-        # 3️⃣ GENERAR PDF PREVIEW (OPCIONAL, NUNCA ROMPE)
+        # 4️⃣ GENERAR PDF PREVIEW (NO BLOQUEANTE)
         # ====================================================
         pdf_path = None
         try:
@@ -410,10 +444,10 @@ def crear_factura_electronica(
                 output_path=tmp_path
             )
         except Exception:
-            pdf_path = None
+            pdf_path = None  # preview JAMÁS rompe
 
         # ====================================================
-        # 4️⃣ INSERTAR SOLO EN INVOICING
+        # 5️⃣ INSERTAR FACTURA (IGUAL QUE MANUAL)
         # ====================================================
         cur.execute("""
             INSERT INTO invoicing (
@@ -476,7 +510,7 @@ def crear_factura_electronica(
         invoicing_id = cur.fetchone()["id"]
 
         # ====================================================
-        # 5️⃣ BLOQUEAR SERVICIO → DESAPARECE DE INVOICING UI
+        # 6️⃣ MARCAR SERVICIO COMO FACTURADO (UI DESAPARECE)
         # ====================================================
         cur.execute("""
             UPDATE servicios

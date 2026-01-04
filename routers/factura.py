@@ -446,11 +446,11 @@ from fastapi import Query
 from datetime import date
 
 # ============================================================
-# PREVIEW INFO (termino_pago desde cliente_credito usando nombre cliente)
+# PREVIEW INFO (cliente -> cliente_credito)
 # ============================================================
 @router.get("/preview-info")
 def get_factura_preview_info(
-    nombre_cliente: str = Query(..., description="Nombre comercial o jurídico del cliente"),
+    nombre_cliente: str | None = Query(None),
     conn=Depends(get_db)
 ):
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -458,9 +458,11 @@ def get_factura_preview_info(
     try:
         nombre = (nombre_cliente or "").strip()
         if not nombre:
-            raise HTTPException(status_code=400, detail="nombre_cliente requerido")
+            return {
+                "termino_pago": None
+            }
 
-        # 1) Resolver codigo_cliente desde tabla cliente (nombrecomercial / nombrejuridico)
+        # 1) Resolver codigo_cliente
         cur.execute("""
             SELECT codigo
             FROM cliente
@@ -470,15 +472,14 @@ def get_factura_preview_info(
         """, (nombre, nombre))
 
         row_cliente = cur.fetchone()
-        if not row_cliente or not row_cliente.get("codigo"):
-            raise HTTPException(
-                status_code=404,
-                detail="No se pudo resolver el código del cliente desde tabla cliente"
-            )
+        if not row_cliente:
+            return {
+                "termino_pago": None
+            }
 
         codigo_cliente = row_cliente["codigo"]
 
-        # 2) Buscar termino_pago en cliente_credito usando codigo_cliente
+        # 2) Buscar termino_pago
         cur.execute("""
             SELECT termino_pago
             FROM cliente_credito
@@ -487,18 +488,11 @@ def get_factura_preview_info(
         """, (codigo_cliente,))
 
         row_credito = cur.fetchone()
-        termino_pago = None
-        if row_credito and row_credito.get("termino_pago") is not None:
-            termino_pago = int(row_credito["termino_pago"])
 
         return {
             "codigo_cliente": codigo_cliente,
-            "termino_pago": termino_pago,
-            "fecha_emision": date.today().isoformat()
+            "termino_pago": row_credito["termino_pago"] if row_credito else None
         }
 
     finally:
         cur.close()
-
-
-

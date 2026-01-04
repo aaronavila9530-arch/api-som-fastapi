@@ -3,9 +3,13 @@ from psycopg2.extras import RealDictCursor
 from datetime import datetime
 from fastapi.responses import FileResponse
 import os
+import uuid
 
 from database import get_db
 from rbac_service import has_permission
+
+from services.factura_electronica_parser import parse_factura_electronica_from_bytes
+from services.pdf.factura_preview_pdf import generar_factura_preview_pdf  # opcional
 
 router = APIRouter(
     prefix="/factura",
@@ -310,25 +314,77 @@ def crear_factura_manual(payload: dict, conn=Depends(get_db)):
 
 @router.post("/electronica")
 def crear_factura_electronica(
-    xml_path: str,
-    codigo_cliente: str,
-    nombre_cliente: str,
+    file: UploadFile = File(...),
+    servicio_id: int = Form(...),
     conn=Depends(get_db)
 ):
-    from services.factura_electronica_parser import parse_factura_electronica
+    if not file.filename.lower().endswith(".xml"):
+        raise HTTPException(400, "El archivo debe ser XML")
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        data = parse_factura_electronica(xml_path)
+        # ====================================================
+        # 1️⃣ OBTENER SERVICIO (FUENTE DE VERDAD)
+        # ====================================================
+        cur.execute("""
+            SELECT
+                s.consec,
+                s.num_informe,
+                s.buque_contenedor,
+                s.operacion,
+                s.fecha_inicio,
+                s.fecha_fin,
+                s.cliente,
+                c.codigo AS codigo_cliente
+            FROM servicios s
+            JOIN cliente c
+              ON c.nombrecomercial = s.cliente
+              OR c.nombrejuridico = s.cliente
+            WHERE s.consec = %s
+        """, (servicio_id,))
 
-        numero_documento = data["numero_factura"]
-        fecha_emision = data["fecha_emision"]
-        moneda = data["moneda"]
-        total = data["total"]
+        servicio = cur.fetchone()
+        if not servicio:
+            raise HTTPException(404, "Servicio no encontrado")
 
+        # ====================================================
+        # 2️⃣ PARSEAR XML (BACKEND ONLY)
+        # ====================================================
+        xml_bytes = file.file.read()
+        data_xml = parse_factura_electronica_from_bytes(xml_bytes)
+
+        numero_documento = data_xml["numero_factura"]
+        fecha_emision = data_xml["fecha_emision"]
+        moneda = data_xml["moneda"]
+        total = data_xml["total"]
+        termino_pago = int(data_xml.get("termino_pago") or 0)
+
+        # ====================================================
+        # 3️⃣ GENERAR PDF TEMPORAL (PREVIEW)
+        # ====================================================
         pdf_path = None
+        try:
+            tmp_name = f"/tmp/factura_preview_{uuid.uuid4().hex}.pdf"
+            pdf_path = generar_factura_preview_pdf(
+                {
+                    "numero_documento": numero_documento,
+                    "fecha_emision": fecha_emision,
+                    "cliente": servicio["cliente"],
+                    "buque_contenedor": servicio["buque_contenedor"],
+                    "operacion": servicio["operacion"],
+                    "periodo": f"{servicio['fecha_inicio']} a {servicio['fecha_fin']}",
+                    "moneda": moneda,
+                    "total": total
+                },
+                output_path=tmp_name
+            )
+        except Exception:
+            pdf_path = None  # preview es opcional
 
+        # ====================================================
+        # 4️⃣ INSERTAR SOLO EN INVOICING
+        # ====================================================
         cur.execute("""
             INSERT INTO invoicing (
                 factura_id,
@@ -342,7 +398,13 @@ def crear_factura_electronica(
                 total,
                 estado,
                 pdf_path,
-                created_at
+                created_at,
+                num_informe,
+                termino_pago,
+                buque_contenedor,
+                operacion,
+                periodo_operacion,
+                descripcion_servicio
             )
             VALUES (
                 NULL,
@@ -356,32 +418,48 @@ def crear_factura_electronica(
                 %s,
                 'EMITIDA',
                 %s,
-                NOW()
+                NOW(),
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s
             )
+            RETURNING id
         """, (
             numero_documento,
-            codigo_cliente,
-            nombre_cliente,
+            servicio["codigo_cliente"],
+            servicio["cliente"],
             fecha_emision,
             moneda,
             total,
-            pdf_path
+            pdf_path,
+            servicio["num_informe"],
+            termino_pago,
+            servicio["buque_contenedor"],
+            servicio["operacion"],
+            f"{servicio['fecha_inicio']} a {servicio['fecha_fin']}",
+            "Factura electrónica cargada desde XML"
         ))
 
+        invoicing_id = cur.fetchone()["id"]
         conn.commit()
-        return {"status": "ok"}
 
+        return {
+            "status": "ok",
+            "invoicing_id": invoicing_id,
+            "pdf_preview": pdf_path
+        }
+
+    except HTTPException:
+        conn.rollback()
+        raise
     except Exception as e:
         conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(500, str(e))
     finally:
         cur.close()
-
-
-from fastapi import Query
-from datetime import date
-
-
 
 
 

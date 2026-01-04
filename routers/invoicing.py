@@ -548,29 +548,34 @@ def emitir_factura_anticipada_xml(
 
     try:
         # 1️⃣ Validaciones
-        if not file or not file.filename.lower().endswith(".xml"):
-            raise HTTPException(400, "Archivo XML inválido")
+        if not file or not file.filename:
+            raise HTTPException(400, "Archivo XML requerido")
 
+        if not file.filename.lower().endswith(".xml"):
+            raise HTTPException(400, "El archivo debe ser XML")
+
+        # 2️⃣ Leer bytes
         xml_bytes = file.file.read()
         if not xml_bytes:
             raise HTTPException(400, "Archivo XML vacío")
 
-        # 2️⃣ PARSER REAL (ruta correcta)
-        from backend_api.services.xml.factura_electronica_parser import (
+        # 3️⃣ Parsear XML (RUTA REAL)
+        from services.xml.factura_electronica_parser import (
             parse_factura_electronica_from_bytes
         )
 
         data = parse_factura_electronica_from_bytes(xml_bytes)
 
-        # 3️⃣ Validar campos críticos
-        for k in ("numero_factura", "fecha_emision", "moneda", "total"):
-            if not data.get(k):
-                raise HTTPException(400, f"XML inválido: falta {k}")
+        # 4️⃣ Validar campos
+        for field in ("numero_factura", "fecha_emision", "moneda", "total"):
+            if not data.get(field):
+                raise HTTPException(
+                    400,
+                    f"XML inválido: falta {field}"
+                )
 
-        # 4️⃣ PDF (ruta correcta)
-        from backend_api.services.pdf.factura_xml_pdf import (
-            generar_factura_xml_pdf
-        )
+        # 5️⃣ Generar PDF (IMPORT CORRECTO)
+        from services.pdf.factura_xml_pdf import generar_factura_xml_pdf
 
         pdf_path = generar_factura_xml_pdf({
             "numero_factura": data["numero_factura"],
@@ -580,9 +585,10 @@ def emitir_factura_anticipada_xml(
             "total": data["total"]
         })
 
-        # 5️⃣ INSERT
+        # 6️⃣ Insert DB
         cur.execute("""
             INSERT INTO invoicing (
+                factura_id,
                 tipo_factura,
                 tipo_documento,
                 numero_documento,
@@ -597,9 +603,15 @@ def emitir_factura_anticipada_xml(
                 descripcion_servicio
             )
             VALUES (
+                NULL,
                 'ELECTRONICA',
                 'FACTURA',
-                %s, %s, %s, %s, %s, %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
+                %s,
                 'EMITIDA',
                 %s,
                 NOW(),
@@ -632,7 +644,10 @@ def emitir_factura_anticipada_xml(
 
     except Exception as e:
         conn.rollback()
-        raise HTTPException(500, f"Error XML anticipada: {str(e)}")
+        raise HTTPException(
+            500,
+            f"Error XML anticipada: {str(e)}"
+        )
 
     finally:
         cur.close()

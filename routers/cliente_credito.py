@@ -375,3 +375,95 @@ def get_credit_exposure(
         )
     finally:
         cur.close()
+
+
+# ============================================================
+# GET /cliente-credito/{codigo_cliente}
+# Obtener configuración crediticia
+# ============================================================
+@router.get("/{codigo_cliente}")
+def get_credito_cliente(
+    codigo_cliente: str,
+    conn=Depends(get_db)
+):
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        cur.execute("""
+            SELECT
+                codigo_cliente,
+                termino_pago,
+                limite_credito,
+                moneda,
+                estado_credito,
+                hold_manual,
+                observaciones
+            FROM cliente_credito
+            WHERE codigo_cliente = %s
+            LIMIT 1
+        """, (codigo_cliente,))
+
+        data = cur.fetchone()
+
+        if not data:
+            raise HTTPException(
+                status_code=404,
+                detail="Cliente sin configuración crediticia"
+            )
+
+        return data
+
+    finally:
+        cur.close()
+
+
+
+
+# ============================================================
+# PUT /cliente-credito/{codigo_cliente}
+# Actualizar configuración crediticia
+# ============================================================
+@router.put("/{codigo_cliente}")
+def update_credito_cliente(
+    codigo_cliente: str,
+    payload: dict,
+    conn=Depends(get_db)
+):
+    cur = conn.cursor()
+
+    try:
+        cur.execute("""
+            UPDATE cliente_credito
+            SET
+                termino_pago   = %s,
+                limite_credito = %s,
+                moneda          = %s,
+                estado_credito = %s,
+                hold_manual    = %s,
+                observaciones  = %s,
+                updated_at     = CURRENT_TIMESTAMP
+            WHERE codigo_cliente = %s
+        """, (
+            payload["termino_pago"],
+            payload["limite_credito"],
+            payload["moneda"],
+            payload["estado_credito"],
+            payload["hold_manual"],
+            payload.get("observaciones"),
+            codigo_cliente
+        ))
+
+        if cur.rowcount == 0:
+            raise HTTPException(404, "Cliente no encontrado")
+
+        conn.commit()
+
+        return {"status": "ok"}
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(500, str(e))
+
+    finally:
+        cur.close()
+

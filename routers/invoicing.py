@@ -21,6 +21,11 @@ from services.xml.electronic_documents_parser import (
     parse_electronic_document
 )
 
+from services.xml.electronic_documents_parser import (
+    parse_electronic_document_from_bytes
+)
+
+
 
 
 router = APIRouter(

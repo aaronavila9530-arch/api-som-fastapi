@@ -393,31 +393,24 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
         referencia = str(payload.get("referencia") or "").strip()
         tipo_aplicacion = str(payload.get("tipo_aplicacion") or "PAGO").strip().upper()
 
-        # monto_pagado (Monto a aplicar)
         try:
             monto_pagado = float(payload.get("monto_pagado") or 0)
         except Exception:
             monto_pagado = 0.0
 
-        # comisión
         try:
             comision = float(payload.get("comision") or 0)
         except Exception:
             comision = 0.0
 
-        # fecha_pago
         fecha_pago_raw = payload.get("fecha_pago")
         if isinstance(fecha_pago_raw, date):
             fecha_pago = fecha_pago_raw
         elif isinstance(fecha_pago_raw, datetime):
             fecha_pago = fecha_pago_raw.date()
         elif isinstance(fecha_pago_raw, str) and fecha_pago_raw.strip():
-            try:
-                fecha_pago = datetime.fromisoformat(fecha_pago_raw.strip()).date()
-            except Exception:
-                raise HTTPException(400, "fecha_pago inválida (use YYYY-MM-DD)")
+            fecha_pago = datetime.fromisoformat(fecha_pago_raw).date()
         else:
-            # si viene vacío, usa hoy
             fecha_pago = date.today()
 
         # ==============================
@@ -436,7 +429,6 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
             raise HTTPException(400, "monto_pagado debe ser mayor a cero")
 
         if tipo_aplicacion != "PAGO":
-            # en este endpoint solo manejamos pagos
             raise HTTPException(400, "tipo_aplicacion debe ser PAGO")
 
         # ==============================
@@ -458,7 +450,7 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
                 %s, %s, %s,
                 %s, %s, %s,
                 %s, %s,
-                %s, NOW()
+                'PAGO', NOW()
             )
             RETURNING id
         """, (
@@ -469,55 +461,66 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
             fecha_pago,
             comision,
             referencia,
-            monto_pagado,
-            "PAGO"
+            monto_pagado
         ))
 
         cash_id = cur.fetchone()["id"]
 
         # ==============================
-        # 4) (Recomendado) Aplicar contra Collections
-        #    - Si el documento existe: resta saldo y actualiza estado
-        #    - Si no existe: NO falla, solo registra el cash_app
+        # 4) Recalcular saldo en collections
         # ==============================
         cur.execute("""
-            SELECT saldo_pendiente
+            SELECT total
             FROM collections
             WHERE numero_documento = %s
               AND codigo_cliente = %s
             FOR UPDATE
         """, (numero_documento, codigo_cliente))
 
-        row = cur.fetchone()
+        factura = cur.fetchone()
 
         collections_updated = False
         saldo_anterior = None
         saldo_actual = None
         estado_factura = None
 
-        if row:
-            saldo_anterior = float(row["saldo_pendiente"] or 0)
+        if factura:
+            total_factura = float(factura["total"] or 0)
 
-            if monto_pagado > saldo_anterior:
-                raise HTTPException(
-                    400,
-                    f"El monto aplicado ({monto_pagado}) excede el saldo pendiente ({saldo_anterior})"
-                )
+            cur.execute("""
+                SELECT COALESCE(SUM(monto_pagado + comision), 0) AS total_pagado
+                FROM cash_app
+                WHERE numero_documento = %s
+                  AND codigo_cliente = %s
+                  AND tipo_aplicacion = 'PAGO'
+            """, (numero_documento, codigo_cliente))
 
-            saldo_actual = saldo_anterior - monto_pagado
+            total_pagado = float(cur.fetchone()["total_pagado"] or 0)
+
+            saldo_anterior = total_factura
+            saldo_actual = total_factura - total_pagado
+
             if saldo_actual <= 0:
                 saldo_actual = 0.0
                 estado_factura = "PAGADA"
+            elif saldo_actual < total_factura:
+                estado_factura = "PAGO_PARCIAL"
             else:
                 estado_factura = "PENDIENTE_PAGO"
 
             cur.execute("""
                 UPDATE collections
-                SET saldo_pendiente = %s,
+                SET
+                    saldo_pendiente = %s,
                     estado_factura = %s
                 WHERE numero_documento = %s
                   AND codigo_cliente = %s
-            """, (saldo_actual, estado_factura, numero_documento, codigo_cliente))
+            """, (
+                saldo_actual,
+                estado_factura,
+                numero_documento,
+                codigo_cliente
+            ))
 
             collections_updated = True
 
@@ -527,7 +530,6 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
             "status": "ok",
             "cash_app_id": cash_id,
             "collections_updated": collections_updated,
-            "saldo_anterior": saldo_anterior,
             "saldo_actual": saldo_actual,
             "estado_factura": estado_factura
         }

@@ -57,6 +57,145 @@ def _safe_int(v, default=0) -> int:
 
 
 # ============================================================
+Sync Invoicing to Collections
+# ============================================================
+
+@router.post("/sync-from-invoicing")
+def sync_collections_from_invoicing(conn=Depends(get_db)):
+
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+
+    try:
+        # -------------------------------------------------
+        # 1. Obtener facturas válidas NO sincronizadas
+        # -------------------------------------------------
+        cur.execute("""
+            SELECT *
+            FROM invoicing i
+            WHERE i.tipo_documento = 'FACTURA'
+              AND i.estado = 'EMITIDA'
+              AND i.total > 0
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM collections c
+                  WHERE c.numero_documento = i.numero_documento
+                    AND c.codigo_cliente = i.codigo_cliente
+              )
+        """)
+
+        facturas = cur.fetchall()
+
+        inserted = 0
+        hoy = date.today()
+
+        for f in facturas:
+
+            dias_credito = int(f.get("termino_pago") or 0)
+            fecha_emision = f["fecha_emision"]
+            fecha_vencimiento = fecha_emision + timedelta(days=dias_credito)
+
+            aging_dias = (hoy - fecha_vencimiento).days
+
+            if aging_dias <= 0:
+                bucket = "CURRENT"
+            elif aging_dias <= 30:
+                bucket = "1-30"
+            elif aging_dias <= 60:
+                bucket = "31-60"
+            elif aging_dias <= 90:
+                bucket = "61-90"
+            else:
+                bucket = "90+"
+
+            # -------------------------------------------------
+            # 2. Insertar en collections
+            # -------------------------------------------------
+            cur.execute("""
+                INSERT INTO collections (
+                    numero_documento,
+                    codigo_cliente,
+                    nombre_cliente,
+                    tipo_factura,
+                    tipo_documento,
+                    fecha_emision,
+                    fecha_vencimiento,
+                    moneda,
+                    total,
+                    dias_credito,
+                    aging_dias,
+                    bucket_aging,
+                    num_informe,
+                    buque_contenedor,
+                    operacion,
+                    periodo_operacion,
+                    descripcion_servicio,
+                    estado_factura,
+                    disputada,
+                    saldo_pendiente,
+                    created_at
+                )
+                VALUES (
+                    %(numero_documento)s,
+                    %(codigo_cliente)s,
+                    %(nombre_cliente)s,
+                    %(tipo_factura)s,
+                    %(tipo_documento)s,
+                    %(fecha_emision)s,
+                    %(fecha_vencimiento)s,
+                    %(moneda)s,
+                    %(total)s,
+                    %(dias_credito)s,
+                    %(aging_dias)s,
+                    %(bucket_aging)s,
+                    %(num_informe)s,
+                    %(buque_contenedor)s,
+                    %(operacion)s,
+                    %(periodo_operacion)s,
+                    %(descripcion_servicio)s,
+                    'PENDIENTE_PAGO',
+                    FALSE,
+                    %(saldo_pendiente)s,
+                    NOW()
+                )
+            """, {
+                "numero_documento": f["numero_documento"],
+                "codigo_cliente": f["codigo_cliente"],
+                "nombre_cliente": f["nombre_cliente"],
+                "tipo_factura": f["tipo_factura"],
+                "tipo_documento": f["tipo_documento"],
+                "fecha_emision": fecha_emision,
+                "fecha_vencimiento": fecha_vencimiento,
+                "moneda": f["moneda"],
+                "total": f["total"],
+                "dias_credito": dias_credito,
+                "aging_dias": aging_dias,
+                "bucket_aging": bucket,
+                "num_informe": f.get("num_informe"),
+                "buque_contenedor": f.get("buque_contenedor"),
+                "operacion": f.get("operacion"),
+                "periodo_operacion": f.get("periodo_operacion"),
+                "descripcion_servicio": f.get("descripcion_servicio"),
+                "saldo_pendiente": f["total"]
+            })
+
+            inserted += 1
+
+        conn.commit()
+
+        return {
+            "status": "ok",
+            "inserted": inserted
+        }
+
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(500, str(e))
+
+    finally:
+        cur.close()
+
+
+# ============================================================
 # POST /collections/post-to-accounting
 # Genera asientos contables para facturas existentes (y futuras que caigan a collections)
 # ============================================================

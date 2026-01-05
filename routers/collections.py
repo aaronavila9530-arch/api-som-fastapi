@@ -57,7 +57,7 @@ def _safe_int(v, default=0) -> int:
 
 
 # ============================================================
-Sync Invoicing to Collections
+# sync invoicing to collections
 # ============================================================
 
 @router.post("/sync-from-invoicing")

@@ -7,7 +7,7 @@ from fastapi import (
 )
 from psycopg2.extras import RealDictCursor
 from typing import Optional
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from database import get_db
 from rbac_service import has_permission
@@ -56,7 +56,8 @@ def _safe_int(v, default=0) -> int:
         return default
 
 # ============================================================
-# SYNC INVOICING → COLLECTIONS (BLINDADO)
+# POST /collections/sync-from-invoicing
+# Sincroniza facturas EMITIDAS → Collections
 # ============================================================
 @router.post("/sync-from-invoicing")
 def sync_collections_from_invoicing(conn=Depends(get_db)):
@@ -82,42 +83,31 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
         """)
 
         facturas = cur.fetchall()
-        hoy = date.today()
-        inserted = 0
 
+        inserted = 0
+        hoy = date.today()
+
+        # -------------------------------------------------
+        # 2. Procesar una por una (blindado)
+        # -------------------------------------------------
         for f in facturas:
 
-            # -------------------------------
-            # fecha_emision (BLINDADO)
-            # -------------------------------
+            # ---------- Fecha emisión segura ----------
             fecha_emision = f.get("fecha_emision")
-
-            if fecha_emision is None:
-                continue
 
             if isinstance(fecha_emision, datetime):
                 fecha_emision = fecha_emision.date()
             elif isinstance(fecha_emision, str):
-                try:
-                    fecha_emision = datetime.fromisoformat(fecha_emision).date()
-                except Exception:
-                    continue
+                fecha_emision = datetime.fromisoformat(fecha_emision).date()
             elif not isinstance(fecha_emision, date):
-                continue
+                raise ValueError(f"fecha_emision inválida: {fecha_emision}")
 
-            # -------------------------------
-            # dias_credito (BLINDADO)
-            # -------------------------------
-            try:
-                dias_credito = int(f.get("termino_pago") or 0)
-            except Exception:
-                dias_credito = 0
+            # ---------- Días de crédito ----------
+            dias_credito = int(f.get("termino_pago") or 0)
 
             fecha_vencimiento = fecha_emision + timedelta(days=dias_credito)
 
-            # -------------------------------
-            # aging + bucket
-            # -------------------------------
+            # ---------- Aging ----------
             aging_dias = (hoy - fecha_vencimiento).days
 
             if aging_dias <= 0:
@@ -131,9 +121,11 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
             else:
                 bucket = "90+"
 
-            # -------------------------------
-            # INSERT SEGURO
-            # -------------------------------
+            total = float(f.get("total") or 0)
+
+            # -------------------------------------------------
+            # 3. Insertar en collections
+            # -------------------------------------------------
             cur.execute("""
                 INSERT INTO collections (
                     numero_documento,
@@ -190,7 +182,7 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
                 "fecha_emision": fecha_emision,
                 "fecha_vencimiento": fecha_vencimiento,
                 "moneda": f.get("moneda"),
-                "total": f.get("total") or 0,
+                "total": total,
                 "dias_credito": dias_credito,
                 "aging_dias": aging_dias,
                 "bucket_aging": bucket,
@@ -199,7 +191,7 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
                 "operacion": f.get("operacion"),
                 "periodo_operacion": f.get("periodo_operacion"),
                 "descripcion_servicio": f.get("descripcion_servicio"),
-                "saldo_pendiente": f.get("total") or 0
+                "saldo_pendiente": total
             })
 
             inserted += 1
@@ -213,8 +205,10 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
 
     except Exception as e:
         conn.rollback()
-        print("🔥 ERROR sync-from-invoicing:", repr(e))
-        raise
+        raise HTTPException(
+            status_code=500,
+            detail=f"Sync invoicing → collections failed: {str(e)}"
+        )
 
     finally:
         cur.close()

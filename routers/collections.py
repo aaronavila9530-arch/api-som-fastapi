@@ -432,6 +432,11 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
             raise HTTPException(400, "tipo_aplicacion debe ser PAGO")
 
         # ==============================
+        # NORMALIZAR DOCUMENTO (CLAVE)
+        # ==============================
+        numero_norm = numero_documento.lstrip("0")
+
+        # ==============================
         # 3) Insertar en cash_app
         # ==============================
         cur.execute("""
@@ -472,15 +477,14 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
         cur.execute("""
             SELECT total
             FROM collections
-            WHERE numero_documento = %s
+            WHERE ltrim(numero_documento, '0') = %s
               AND codigo_cliente = %s
             FOR UPDATE
-        """, (numero_documento, codigo_cliente))
+        """, (numero_norm, codigo_cliente))
 
         factura = cur.fetchone()
 
         collections_updated = False
-        saldo_anterior = None
         saldo_actual = None
         estado_factura = None
 
@@ -490,14 +494,13 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
             cur.execute("""
                 SELECT COALESCE(SUM(monto_pagado + comision), 0) AS total_pagado
                 FROM cash_app
-                WHERE numero_documento = %s
+                WHERE ltrim(numero_documento, '0') = %s
                   AND codigo_cliente = %s
                   AND tipo_aplicacion = 'PAGO'
-            """, (numero_documento, codigo_cliente))
+            """, (numero_norm, codigo_cliente))
 
             total_pagado = float(cur.fetchone()["total_pagado"] or 0)
 
-            saldo_anterior = total_factura
             saldo_actual = total_factura - total_pagado
 
             if saldo_actual <= 0:
@@ -513,12 +516,12 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
                 SET
                     saldo_pendiente = %s,
                     estado_factura = %s
-                WHERE numero_documento = %s
+                WHERE ltrim(numero_documento, '0') = %s
                   AND codigo_cliente = %s
             """, (
                 saldo_actual,
                 estado_factura,
-                numero_documento,
+                numero_norm,
                 codigo_cliente
             ))
 

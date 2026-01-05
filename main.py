@@ -50,6 +50,7 @@ app = FastAPI(
     title="ERP-SOM API",
     version="1.0",
     description="API para Continentes, Países, Puertos y Empleados — ERP SOM"
+    redirect_slashes=True
 )
 
 # ============================================================

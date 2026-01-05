@@ -53,107 +53,139 @@ def get_bank_reconciliation(
     offset = (page - 1) * page_size
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    # -----------------------------
-    # WHERE dinámico (compartido)
-    # -----------------------------
+    # ============================================================
+    # ===================== CASH_APP (NO TOCAR) ==================
+    # ============================================================
+
     where_clauses = []
     params = {}
 
     if codigo_cliente:
-        where_clauses.append("codigo_cliente = %(codigo_cliente)s")
+        where_clauses.append("ca.codigo_cliente = %(codigo_cliente)s")
         params["codigo_cliente"] = codigo_cliente
 
     if referencia:
-        where_clauses.append("numero_referencia ILIKE %(referencia)s")
+        where_clauses.append("ca.referencia ILIKE %(referencia)s")
         params["referencia"] = f"%{referencia}%"
 
     where_sql = ""
     if where_clauses:
         where_sql = "WHERE " + " AND ".join(where_clauses)
 
-    # -----------------------------
-    # QUERY UNIFICADO
-    # -----------------------------
-    sql = f"""
-        SELECT *
-        FROM (
-            -- ===============================
-            -- CASH APP
-            -- ===============================
-            SELECT
-                ca.id,
-                'CASH_APP' AS origen,
-                ca.codigo_cliente,
-                ca.nombre_cliente,
-                ca.banco,
-                ca.numero_documento AS documento,
-                ca.referencia AS numero_referencia,
-                ca.fecha_pago,
-                ca.monto_pagado AS monto,
-                ca.created_at,
-                CASE
-                    WHEN ca.monto_pagado > 0 THEN 'APLICADO'
-                    ELSE 'DESAPLICADO'
-                END AS estado
-            FROM cash_app ca
+    cash_sql = f"""
+        SELECT
+            ca.id,
+            'CASH_APP' AS origen,
+            ca.numero_documento AS documento,
+            ca.codigo_cliente,
+            ca.nombre_cliente,
+            ca.banco,
+            ca.fecha_pago,
+            ca.comision,
+            ca.referencia AS numero_referencia,
+            ca.monto_pagado AS monto,
+            ca.tipo_aplicacion,
+            ca.created_at,
 
-            UNION ALL
+            -- UI
+            0::numeric AS monto_aplicado,
+            ca.monto_pagado AS saldo,
 
-            -- ===============================
-            -- INCOMING PAYMENTS
-            -- ===============================
-            SELECT
-                ip.id,
-                ip.origen,
-                ip.codigo_cliente,
-                ip.nombre_cliente,
-                ip.banco,
-                ip.documento,
-                ip.numero_referencia,
-                ip.fecha_pago,
-                ip.monto,
-                ip.created_at,
-                ip.estado
-            FROM incoming_payments ip
-        ) t
+            CASE
+                WHEN ca.monto_pagado > 0 THEN 'APLICADO'
+                ELSE 'DESAPLICADO'
+            END AS estado
+        FROM cash_app ca
         {where_sql}
-        ORDER BY fecha_pago DESC
+        ORDER BY ca.fecha_pago DESC
         LIMIT %(limit)s OFFSET %(offset)s
     """
 
-    params["limit"] = page_size
-    params["offset"] = offset
+    params_cash = params.copy()
+    params_cash["limit"] = page_size
+    params_cash["offset"] = offset
 
-    cur.execute(sql, params)
-    rows = cur.fetchall()
+    cur.execute(cash_sql, params_cash)
+    cash_rows = cur.fetchall()
 
-    # -----------------------------
-    # TOTAL PARA PAGINACIÓN
-    # -----------------------------
-    count_sql = f"""
+    count_cash_sql = f"""
         SELECT COUNT(*) AS total
-        FROM (
-            SELECT ca.id
-            FROM cash_app ca
-
-            UNION ALL
-
-            SELECT ip.id
-            FROM incoming_payments ip
-        ) t
+        FROM cash_app ca
         {where_sql}
     """
+    cur.execute(count_cash_sql, params)
+    total_cash = cur.fetchone()["total"]
 
-    cur.execute(count_sql, params)
-    total = cur.fetchone()["total"]
+    # ============================================================
+    # ================= INCOMING_PAYMENTS (NUEVO) ================
+    # ============================================================
+
+    where_ip = []
+    params_ip = {}
+
+    if codigo_cliente:
+        where_ip.append("ip.codigo_cliente = %(codigo_cliente)s")
+        params_ip["codigo_cliente"] = codigo_cliente
+
+    if referencia:
+        where_ip.append("ip.numero_referencia ILIKE %(referencia)s")
+        params_ip["referencia"] = f"%{referencia}%"
+
+    where_ip_sql = ""
+    if where_ip:
+        where_ip_sql = "WHERE " + " AND ".join(where_ip)
+
+    incoming_sql = f"""
+        SELECT
+            ip.id,
+            ip.origen,
+            ip.documento,
+            ip.codigo_cliente,
+            ip.nombre_cliente,
+            ip.banco,
+            ip.fecha_pago,
+            NULL::numeric AS comision,
+            ip.numero_referencia,
+            ip.monto,
+            NULL::text AS tipo_aplicacion,
+            ip.created_at,
+
+            -- UI
+            0::numeric AS monto_aplicado,
+            ip.monto AS saldo,
+            ip.estado
+        FROM incoming_payments ip
+        {where_ip_sql}
+        ORDER BY ip.fecha_pago DESC
+        LIMIT %(limit)s OFFSET %(offset)s
+    """
+
+    params_ip["limit"] = page_size
+    params_ip["offset"] = offset
+
+    cur.execute(incoming_sql, params_ip)
+    incoming_rows = cur.fetchall()
+
+    count_ip_sql = f"""
+        SELECT COUNT(*) AS total
+        FROM incoming_payments ip
+        {where_ip_sql}
+    """
+    cur.execute(count_ip_sql, params_ip)
+    total_ip = cur.fetchone()["total"]
 
     cur.close()
+
+    # ============================================================
+    # ======================= RESULTADO ==========================
+    # ============================================================
+    data = cash_rows + incoming_rows
 
     return {
         "page": page,
         "page_size": page_size,
-        "total": total,
-        "data": rows
+        "total": total_cash + total_ip,
+        "data": data
     }
 
 

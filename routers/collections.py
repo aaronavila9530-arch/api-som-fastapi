@@ -646,5 +646,171 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
             cur.close()
 
 
+# ============================================================
+# POST /collections/aplicar-nota-credito
+# Aplica una Nota de Crédito a una Factura
+# ============================================================
+@router.post("/aplicar-nota-credito")
+def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
+
+    cur = None
+
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        factura_numero = str(payload.get("factura_numero") or "").strip()
+        nota_numero = str(payload.get("nota_credito_numero") or "").strip()
+        codigo_cliente = str(payload.get("codigo_cliente") or "").strip()
+
+        if not factura_numero or not nota_numero or not codigo_cliente:
+            raise HTTPException(400, "Datos incompletos para aplicar nota de crédito")
+
+        # ====================================================
+        # 1️⃣ BLOQUEAR FACTURA
+        # ====================================================
+        cur.execute("""
+            SELECT *
+            FROM collections
+            WHERE numero_documento = %s
+              AND codigo_cliente = %s
+              AND tipo_documento = 'FACTURA'
+            FOR UPDATE
+        """, (factura_numero, codigo_cliente))
+
+        factura = cur.fetchone()
+        if not factura:
+            raise HTTPException(404, "Factura no encontrada en Collections")
+
+        saldo_factura = float(factura["saldo_pendiente"] or 0)
+
+        if saldo_factura <= 0:
+            raise HTTPException(400, "La factura no tiene saldo pendiente")
+
+        # ====================================================
+        # 2️⃣ BLOQUEAR NOTA DE CRÉDITO
+        # ====================================================
+        cur.execute("""
+            SELECT *
+            FROM collections
+            WHERE numero_documento = %s
+              AND codigo_cliente = %s
+              AND tipo_documento = 'NOTA_CREDITO'
+              AND estado_factura != 'APLICADA'
+            FOR UPDATE
+        """, (nota_numero, codigo_cliente))
+
+        nota = cur.fetchone()
+        if not nota:
+            raise HTTPException(404, "Nota de crédito no disponible o ya aplicada")
+
+        monto_nc = float(nota["saldo_pendiente"] or nota["total"] or 0)
+
+        if monto_nc <= 0:
+            raise HTTPException(400, "Monto inválido en la nota de crédito")
+
+        if monto_nc > saldo_factura:
+            raise HTTPException(
+                400,
+                f"La nota de crédito ({monto_nc}) excede el saldo de la factura ({saldo_factura})"
+            )
+
+        # ====================================================
+        # 3️⃣ CALCULAR NUEVO SALDO FACTURA
+        # ====================================================
+        nuevo_saldo = saldo_factura - monto_nc
+
+        if nuevo_saldo <= 0:
+            nuevo_saldo = 0
+            estado_factura = "PAGADA"
+        else:
+            estado_factura = "PENDIENTE_PAGO"
+
+        # ====================================================
+        # 4️⃣ ACTUALIZAR FACTURA
+        # ====================================================
+        cur.execute("""
+            UPDATE collections
+            SET
+                saldo_pendiente = %s,
+                estado_factura = %s
+            WHERE numero_documento = %s
+        """, (
+            nuevo_saldo,
+            estado_factura,
+            factura_numero
+        ))
+
+        # ====================================================
+        # 5️⃣ MARCAR NOTA DE CRÉDITO COMO APLICADA
+        # ====================================================
+        cur.execute("""
+            UPDATE collections
+            SET
+                saldo_pendiente = 0,
+                estado_factura = 'APLICADA'
+            WHERE numero_documento = %s
+        """, (nota_numero,))
+
+        # ====================================================
+        # 6️⃣ REGISTRAR EN CASH_APP (AUDITORÍA)
+        # ====================================================
+        cur.execute("""
+            INSERT INTO cash_app (
+                numero_documento,
+                codigo_cliente,
+                nombre_cliente,
+                banco,
+                fecha_pago,
+                comision,
+                referencia,
+                monto_pagado,
+                tipo_aplicacion,
+                created_at
+            ) VALUES (
+                %s, %s, %s,
+                'NOTA_CREDITO',
+                CURRENT_DATE,
+                0,
+                %s,
+                %s,
+                'NOTA_CREDITO',
+                NOW()
+            )
+        """, (
+            factura_numero,
+            codigo_cliente,
+            factura.get("nombre_cliente"),
+            f"NC {nota_numero}",
+            monto_nc
+        ))
+
+        conn.commit()
+
+        return {
+            "status": "ok",
+            "message": f"Nota de crédito {nota_numero} aplicada correctamente",
+            "factura": factura_numero,
+            "nota_credito": nota_numero,
+            "saldo_anterior": saldo_factura,
+            "saldo_actual": nuevo_saldo,
+            "estado_factura": estado_factura
+        }
+
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error aplicando nota de crédito: {repr(e)}"
+        )
+
+    finally:
+        if cur:
+            cur.close()
 
 

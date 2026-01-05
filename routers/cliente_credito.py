@@ -418,16 +418,8 @@ def get_credito_cliente(
 
 
 
-from fastapi import APIRouter, Depends, HTTPException
-from psycopg2.extras import RealDictCursor
-from database import get_db
-
-router = APIRouter()
-
-
 # ============================================================
-# PUT /cliente-credito/{codigo_cliente}
-# Actualizar configuración crediticia (ROBUSTO)
+# PUT actualizar crédito del cliente (BLINDADO REAL)
 # ============================================================
 @router.put("/{codigo_cliente}")
 def update_credito_cliente(
@@ -438,9 +430,9 @@ def update_credito_cliente(
     cur = conn.cursor()
 
     try:
-        # --------------------------------------------------
-        # Helper seguro (NUNCA revienta)
-        # --------------------------------------------------
+        # ----------------------------
+        # Normalización fuerte
+        # ----------------------------
         def clean(value):
             if value is None:
                 return None
@@ -453,24 +445,18 @@ def update_credito_cliente(
         termino_pago   = clean(payload.get("termino_pago"))
         limite_credito = clean(payload.get("limite_credito"))
         moneda         = clean(payload.get("moneda"))
-        estado_credito = clean(
-            payload.get("estado_credito") or payload.get("estado")
-        )
+        estado_credito = clean(payload.get("estado_credito"))
         hold_manual    = clean(payload.get("hold_manual"))
         observaciones  = clean(payload.get("observaciones"))
 
-        # --------------------------------------------------
-        # Casts SEGUROS
-        # --------------------------------------------------
-        try:
-            termino_pago = int(termino_pago) if termino_pago is not None else None
-        except ValueError:
-            termino_pago = None
+        # ----------------------------
+        # Cast seguro
+        # ----------------------------
+        if termino_pago is not None:
+            termino_pago = int(termino_pago)
 
-        try:
-            limite_credito = float(limite_credito) if limite_credito is not None else None
-        except ValueError:
-            limite_credito = None
+        if limite_credito is not None:
+            limite_credito = float(limite_credito)
 
         if hold_manual is not None:
             if isinstance(hold_manual, str):
@@ -478,9 +464,20 @@ def update_credito_cliente(
             else:
                 hold_manual = bool(hold_manual)
 
-        # --------------------------------------------------
-        # UPDATE
-        # --------------------------------------------------
+        # ----------------------------
+        # NORMALIZACIÓN CRÍTICA (FIX 500)
+        # ----------------------------
+        if estado_credito is not None:
+            estado_credito = estado_credito.upper()
+            if estado_credito not in ("ACTIVE", "INACTIVE", "HOLD"):
+                estado_credito = None  # evita crash de ENUM
+
+        if moneda is not None:
+            moneda = moneda.upper()
+
+        # ----------------------------
+        # UPDATE SEGURO
+        # ----------------------------
         cur.execute("""
             UPDATE cliente_credito
             SET

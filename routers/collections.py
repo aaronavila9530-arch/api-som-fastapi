@@ -551,6 +551,179 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
         if cur:
             cur.close()
 
+# ============================================================
+# POST /collections/aplicar-nota-credito
+# Aplica Nota de Crédito contra una Factura
+# ============================================================
+@router.post("/aplicar-nota-credito")
+@router.post("/aplicar-nota-credito/")
+def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
+
+    cur = None
+
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # ==============================
+        # 1) Leer payload
+        # ==============================
+        factura_numero = str(payload.get("factura_numero") or "").strip()
+        nota_numero = str(payload.get("nota_credito_numero") or "").strip()
+        codigo_cliente = str(payload.get("codigo_cliente") or "").strip()
+        nombre_cliente = str(payload.get("nombre_cliente") or "").strip()
+
+        if not factura_numero or not nota_numero or not codigo_cliente:
+            raise HTTPException(400, "Datos incompletos")
+
+        factura_norm = factura_numero.lstrip("0")
+        nota_norm = nota_numero.lstrip("0")
+
+        # ==============================
+        # 2) Bloquear FACTURA
+        # ==============================
+        cur.execute("""
+            SELECT total
+            FROM collections
+            WHERE ltrim(numero_documento,'0') = %s
+              AND codigo_cliente = %s
+              AND tipo_documento = 'FACTURA'
+            FOR UPDATE
+        """, (factura_norm, codigo_cliente))
+
+        factura = cur.fetchone()
+        if not factura:
+            raise HTTPException(404, "Factura no encontrada")
+
+        total_factura = float(factura["total"] or 0)
+
+        # ==============================
+        # 3) Bloquear NOTA DE CRÉDITO
+        # ==============================
+        cur.execute("""
+            SELECT total
+            FROM collections
+            WHERE ltrim(numero_documento,'0') = %s
+              AND codigo_cliente = %s
+              AND tipo_documento = 'NOTA_CREDITO'
+              AND estado_factura = 'PENDIENTE_PAGO'
+            FOR UPDATE
+        """, (nota_norm, codigo_cliente))
+
+        nota = cur.fetchone()
+        if not nota:
+            raise HTTPException(404, "Nota de Crédito no disponible")
+
+        monto_nc = float(nota["total"] or 0)
+        if monto_nc <= 0:
+            raise HTTPException(400, "Monto de NC inválido")
+
+        # ==============================
+        # 4) Insertar en cash_app
+        # ==============================
+        cur.execute("""
+            INSERT INTO cash_app (
+                numero_documento,
+                codigo_cliente,
+                nombre_cliente,
+                banco,
+                fecha_pago,
+                comision,
+                referencia,
+                monto_pagado,
+                tipo_aplicacion,
+                created_at
+            ) VALUES (
+                %s, %s, %s,
+                NULL,
+                CURRENT_DATE,
+                0,
+                %s,
+                %s,
+                'NOTA_CREDITO',
+                NOW()
+            )
+            RETURNING id
+        """, (
+            factura_numero,
+            codigo_cliente,
+            nombre_cliente,
+            f"NC {nota_numero}",
+            monto_nc
+        ))
+
+        cash_id = cur.fetchone()["id"]
+
+        # ==============================
+        # 5) Recalcular saldo FACTURA
+        # ==============================
+        cur.execute("""
+            SELECT COALESCE(SUM(monto_pagado + comision), 0) AS aplicado
+            FROM cash_app
+            WHERE ltrim(numero_documento,'0') = %s
+              AND codigo_cliente = %s
+        """, (factura_norm, codigo_cliente))
+
+        total_aplicado = float(cur.fetchone()["aplicado"] or 0)
+        saldo_actual = total_factura - total_aplicado
+
+        if saldo_actual <= 0:
+            saldo_actual = 0
+            estado_factura = "PAGADA"
+        elif saldo_actual < total_factura:
+            estado_factura = "PAGO_PARCIAL"
+        else:
+            estado_factura = "PENDIENTE_PAGO"
+
+        # ==============================
+        # 6) Update FACTURA
+        # ==============================
+        cur.execute("""
+            UPDATE collections
+            SET saldo_pendiente = %s,
+                estado_factura = %s
+            WHERE ltrim(numero_documento,'0') = %s
+              AND codigo_cliente = %s
+        """, (
+            saldo_actual,
+            estado_factura,
+            factura_norm,
+            codigo_cliente
+        ))
+
+        # ==============================
+        # 7) Marcar NC como APLICADA
+        # ==============================
+        cur.execute("""
+            UPDATE collections
+            SET saldo_pendiente = 0,
+                estado_factura = 'APLICADA'
+            WHERE ltrim(numero_documento,'0') = %s
+              AND codigo_cliente = %s
+        """, (nota_norm, codigo_cliente))
+
+        conn.commit()
+
+        return {
+            "status": "ok",
+            "cash_app_id": cash_id,
+            "saldo_actual": saldo_actual,
+            "estado_factura": estado_factura
+        }
+
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(500, f"Error aplicando NC: {repr(e)}")
+
+    finally:
+        if cur:
+            cur.close()
+
 
 # ============================================================
 # POST /collections/disputa

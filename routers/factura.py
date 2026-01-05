@@ -10,7 +10,7 @@ from fastapi import (
 )
 
 from psycopg2.extras import RealDictCursor
-from datetime import datetime
+from datetime import datetime, date
 from fastapi.responses import FileResponse
 import os
 import uuid

@@ -136,25 +136,16 @@ def update_credito_cliente(
     payload: dict,
     conn=Depends(get_db)
 ):
-    """
-    payload posible:
-    {
-        termino_pago,
-        limite_credito,
-        estado_credito,
-        hold_manual,
-        observaciones
-    }
-    """
-
     cur = conn.cursor()
 
     try:
         # ----------------------------
-        # Normalización defensiva
+        # Normalización fuerte
         # ----------------------------
         def clean(value):
-            if value == "" or value is None:
+            if value is None:
+                return None
+            if isinstance(value, str) and value.strip() == "":
                 return None
             return value
 
@@ -164,7 +155,9 @@ def update_credito_cliente(
         hold_manual = clean(payload.get("hold_manual"))
         observaciones = clean(payload.get("observaciones"))
 
-        # Cast explícito donde aplica
+        # ----------------------------
+        # Cast explícito y seguro
+        # ----------------------------
         if termino_pago is not None:
             termino_pago = int(termino_pago)
 
@@ -172,7 +165,10 @@ def update_credito_cliente(
             limite_credito = float(limite_credito)
 
         if hold_manual is not None:
-            hold_manual = bool(hold_manual)
+            if isinstance(hold_manual, str):
+                hold_manual = hold_manual.lower() in ("1", "true", "yes", "on")
+            else:
+                hold_manual = bool(hold_manual)
 
         cur.execute("""
             UPDATE cliente_credito
@@ -203,7 +199,7 @@ def update_credito_cliente(
 
         return {
             "status": "ok",
-            "message": "Configuración crediticia actualizada"
+            "message": "Crédito actualizado correctamente"
         }
 
     except HTTPException:

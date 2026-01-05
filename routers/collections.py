@@ -372,47 +372,40 @@ def search_collections(
 
 # ============================================================
 # POST /collections/pago
-# Aplicar pago o nota de crédito (parcial o total)
+# Aplicar pago (parcial o total)
 # ============================================================
 @router.post("/pago")
-@router.post("/pago/")
 def aplicar_pago(payload: dict, conn=Depends(get_db)):
 
-    cur = None
+    cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-
-        # ================================
-        # VALIDAR PAYLOAD MÍNIMO (BLINDADO)
-        # ================================
+        # ---------------- VALIDACIÓN ----------------
         numero_documento = str(payload.get("numero_documento") or "").strip()
         codigo_cliente = str(payload.get("codigo_cliente") or "").strip()
         nombre_cliente = str(payload.get("nombre_cliente") or "").strip()
         tipo_aplicacion = str(payload.get("tipo_aplicacion") or "").strip().upper()
         banco = str(payload.get("banco") or "").strip()
         referencia = str(payload.get("referencia") or "").strip()
+        fecha_pago = payload.get("fecha_pago")
 
         try:
             monto_pagado = float(payload.get("monto_pagado", 0))
         except Exception:
-            monto_pagado = 0
+            monto_pagado = 0.0
 
-        comision = payload.get("comision") or 0
-        fecha_pago = payload.get("fecha_pago")
+        comision = float(payload.get("comision") or 0)
 
         if not numero_documento:
             raise HTTPException(400, "numero_documento es requerido")
 
-        if tipo_aplicacion not in ("PAGO", "NOTA_CREDITO"):
-            raise HTTPException(400, "Tipo de aplicación inválido")
+        if tipo_aplicacion != "PAGO":
+            raise HTTPException(400, "tipo_aplicacion inválido")
 
         if monto_pagado <= 0:
             raise HTTPException(400, "El monto debe ser mayor a cero")
 
-        # ================================
-        # OBTENER SALDO ACTUAL (LOCK)
-        # ================================
+        # ---------------- SALDO ACTUAL ----------------
         cur.execute("""
             SELECT saldo_pendiente
             FROM collections
@@ -427,14 +420,9 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
         saldo_actual = float(row["saldo_pendiente"] or 0)
 
         if monto_pagado > saldo_actual:
-            raise HTTPException(
-                400,
-                f"El monto aplicado ({monto_pagado}) excede el saldo pendiente ({saldo_actual})"
-            )
+            raise HTTPException(400, "Monto excede saldo pendiente")
 
-        # ================================
-        # INSERT CASH APP (LEDGER)
-        # ================================
+        # ---------------- CASH APP ----------------
         cur.execute("""
             INSERT INTO cash_app (
                 numero_documento,
@@ -449,7 +437,7 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
                 created_at
             ) VALUES (
                 %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, NOW()
+                %s, %s, %s, 'PAGO', NOW()
             )
         """, (
             numero_documento,
@@ -459,87 +447,58 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
             fecha_pago,
             comision,
             referencia,
-            monto_pagado,
-            tipo_aplicacion
+            monto_pagado
         ))
 
-        # ================================
-        # CALCULAR NUEVO SALDO
-        # ================================
+        # ---------------- ACTUALIZAR FACTURA ----------------
         nuevo_saldo = saldo_actual - monto_pagado
+        estado = "PAGADA" if nuevo_saldo <= 0 else "PENDIENTE_PAGO"
 
-        if nuevo_saldo <= 0:
-            nuevo_saldo = 0
-            estado = "PAGADA"
-        else:
-            estado = "PENDIENTE_PAGO"
-
-        # ================================
-        # ACTUALIZAR COLLECTIONS
-        # ================================
         cur.execute("""
             UPDATE collections
-            SET
-                saldo_pendiente = %s,
+            SET saldo_pendiente = %s,
                 estado_factura = %s
             WHERE numero_documento = %s
-        """, (
-            nuevo_saldo,
-            estado,
-            numero_documento
-        ))
+        """, (max(nuevo_saldo, 0), estado, numero_documento))
 
         conn.commit()
 
         return {
             "status": "ok",
-            "message": f"{tipo_aplicacion} aplicado correctamente",
             "saldo_anterior": saldo_actual,
-            "saldo_actual": nuevo_saldo,
+            "saldo_actual": max(nuevo_saldo, 0),
             "estado_factura": estado
         }
 
     except HTTPException:
-        if conn:
-            conn.rollback()
+        conn.rollback()
         raise
 
     except Exception as e:
-        if conn:
-            conn.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error aplicando pago: {repr(e)}"
-        )
+        conn.rollback()
+        raise HTTPException(500, repr(e))
 
     finally:
-        if cur:
-            cur.close()
+        cur.close()
 
 
 # ============================================================
 # POST /collections/aplicar-nota-credito
-# Aplica una Nota de Crédito a una Factura
 # ============================================================
 @router.post("/aplicar-nota-credito")
-@router.post("/aplicar-nota-credito/")
 def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
 
-    cur = None
+    cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-
         factura_numero = str(payload.get("factura_numero") or "").strip()
         nota_numero = str(payload.get("nota_credito_numero") or "").strip()
         codigo_cliente = str(payload.get("codigo_cliente") or "").strip()
 
         if not factura_numero or not nota_numero or not codigo_cliente:
-            raise HTTPException(400, "Datos incompletos para aplicar nota de crédito")
+            raise HTTPException(400, "Datos incompletos")
 
-        # ====================================================
-        # 1️⃣ BLOQUEAR FACTURA
-        # ====================================================
+        # -------- FACTURA --------
         cur.execute("""
             SELECT *
             FROM collections
@@ -551,16 +510,13 @@ def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
 
         factura = cur.fetchone()
         if not factura:
-            raise HTTPException(404, "Factura no encontrada en Collections")
+            raise HTTPException(404, "Factura no encontrada")
 
         saldo_factura = float(factura["saldo_pendiente"] or 0)
-
         if saldo_factura <= 0:
-            raise HTTPException(400, "La factura no tiene saldo pendiente")
+            raise HTTPException(400, "Factura sin saldo")
 
-        # ====================================================
-        # 2️⃣ BLOQUEAR NOTA DE CRÉDITO
-        # ====================================================
+        # -------- NOTA DE CRÉDITO --------
         cur.execute("""
             SELECT *
             FROM collections
@@ -573,59 +529,30 @@ def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
 
         nota = cur.fetchone()
         if not nota:
-            raise HTTPException(404, "Nota de crédito no disponible o ya aplicada")
+            raise HTTPException(404, "Nota no disponible")
 
         monto_nc = float(nota["saldo_pendiente"] or 0)
+        if monto_nc <= 0 or monto_nc > saldo_factura:
+            raise HTTPException(400, "Monto NC inválido")
 
-        if monto_nc <= 0:
-            raise HTTPException(400, "Monto inválido en la nota de crédito")
-
-        if monto_nc > saldo_factura:
-            raise HTTPException(
-                400,
-                f"La nota de crédito ({monto_nc}) excede el saldo de la factura ({saldo_factura})"
-            )
-
-        # ====================================================
-        # 3️⃣ CALCULAR NUEVO SALDO FACTURA
-        # ====================================================
+        # -------- APLICAR --------
         nuevo_saldo = saldo_factura - monto_nc
+        estado = "PAGADA" if nuevo_saldo <= 0 else "PENDIENTE_PAGO"
 
-        if nuevo_saldo <= 0:
-            nuevo_saldo = 0
-            estado_factura = "PAGADA"
-        else:
-            estado_factura = "PENDIENTE_PAGO"
-
-        # ====================================================
-        # 4️⃣ ACTUALIZAR FACTURA
-        # ====================================================
         cur.execute("""
             UPDATE collections
-            SET
-                saldo_pendiente = %s,
+            SET saldo_pendiente = %s,
                 estado_factura = %s
             WHERE numero_documento = %s
-        """, (
-            nuevo_saldo,
-            estado_factura,
-            factura_numero
-        ))
+        """, (max(nuevo_saldo, 0), estado, factura_numero))
 
-        # ====================================================
-        # 5️⃣ MARCAR NOTA DE CRÉDITO COMO APLICADA
-        # ====================================================
         cur.execute("""
             UPDATE collections
-            SET
-                saldo_pendiente = 0,
+            SET saldo_pendiente = 0,
                 estado_factura = 'APLICADA'
             WHERE numero_documento = %s
         """, (nota_numero,))
 
-        # ====================================================
-        # 6️⃣ REGISTRAR EN CASH_APP
-        # ====================================================
         cur.execute("""
             INSERT INTO cash_app (
                 numero_documento,
@@ -640,7 +567,7 @@ def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
                 created_at
             ) VALUES (
                 %s, %s, %s,
-                %s,
+                'NOTA_CREDITO',
                 CURRENT_DATE,
                 0,
                 %s,
@@ -651,8 +578,7 @@ def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
         """, (
             factura_numero,
             codigo_cliente,
-            factura.get("nombre_cliente"),
-            "NOTA_CREDITO",
+            factura["nombre_cliente"],
             f"NC {nota_numero}",
             monto_nc
         ))
@@ -661,30 +587,22 @@ def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
 
         return {
             "status": "ok",
-            "message": f"Nota de crédito {nota_numero} aplicada correctamente",
             "factura": factura_numero,
             "nota_credito": nota_numero,
-            "saldo_anterior": saldo_factura,
-            "saldo_actual": nuevo_saldo,
-            "estado_factura": estado_factura
+            "saldo_actual": max(nuevo_saldo, 0),
+            "estado_factura": estado
         }
 
     except HTTPException:
-        if conn:
-            conn.rollback()
+        conn.rollback()
         raise
 
     except Exception as e:
-        if conn:
-            conn.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error aplicando nota de crédito: {repr(e)}"
-        )
+        conn.rollback()
+        raise HTTPException(500, repr(e))
 
     finally:
-        if cur:
-            cur.close()
+        cur.close()
 
 
 # ============================================================

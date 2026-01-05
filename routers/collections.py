@@ -55,11 +55,9 @@ def _safe_int(v, default=0) -> int:
     except Exception:
         return default
 
-
 # ============================================================
-# sync invoicing to collections
+# SYNC INVOICING → COLLECTIONS (BLINDADO)
 # ============================================================
-
 @router.post("/sync-from-invoicing")
 def sync_collections_from_invoicing(conn=Depends(get_db)):
 
@@ -84,16 +82,42 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
         """)
 
         facturas = cur.fetchall()
-
-        inserted = 0
         hoy = date.today()
+        inserted = 0
 
         for f in facturas:
 
-            dias_credito = int(f.get("termino_pago") or 0)
-            fecha_emision = f["fecha_emision"]
+            # -------------------------------
+            # fecha_emision (BLINDADO)
+            # -------------------------------
+            fecha_emision = f.get("fecha_emision")
+
+            if fecha_emision is None:
+                continue
+
+            if isinstance(fecha_emision, datetime):
+                fecha_emision = fecha_emision.date()
+            elif isinstance(fecha_emision, str):
+                try:
+                    fecha_emision = datetime.fromisoformat(fecha_emision).date()
+                except Exception:
+                    continue
+            elif not isinstance(fecha_emision, date):
+                continue
+
+            # -------------------------------
+            # dias_credito (BLINDADO)
+            # -------------------------------
+            try:
+                dias_credito = int(f.get("termino_pago") or 0)
+            except Exception:
+                dias_credito = 0
+
             fecha_vencimiento = fecha_emision + timedelta(days=dias_credito)
 
+            # -------------------------------
+            # aging + bucket
+            # -------------------------------
             aging_dias = (hoy - fecha_vencimiento).days
 
             if aging_dias <= 0:
@@ -107,9 +131,9 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
             else:
                 bucket = "90+"
 
-            # -------------------------------------------------
-            # 2. Insertar en collections
-            # -------------------------------------------------
+            # -------------------------------
+            # INSERT SEGURO
+            # -------------------------------
             cur.execute("""
                 INSERT INTO collections (
                     numero_documento,
@@ -158,15 +182,15 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
                     NOW()
                 )
             """, {
-                "numero_documento": f["numero_documento"],
-                "codigo_cliente": f["codigo_cliente"],
-                "nombre_cliente": f["nombre_cliente"],
-                "tipo_factura": f["tipo_factura"],
-                "tipo_documento": f["tipo_documento"],
+                "numero_documento": f.get("numero_documento"),
+                "codigo_cliente": f.get("codigo_cliente"),
+                "nombre_cliente": f.get("nombre_cliente"),
+                "tipo_factura": f.get("tipo_factura"),
+                "tipo_documento": f.get("tipo_documento"),
                 "fecha_emision": fecha_emision,
                 "fecha_vencimiento": fecha_vencimiento,
-                "moneda": f["moneda"],
-                "total": f["total"],
+                "moneda": f.get("moneda"),
+                "total": f.get("total") or 0,
                 "dias_credito": dias_credito,
                 "aging_dias": aging_dias,
                 "bucket_aging": bucket,
@@ -175,7 +199,7 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
                 "operacion": f.get("operacion"),
                 "periodo_operacion": f.get("periodo_operacion"),
                 "descripcion_servicio": f.get("descripcion_servicio"),
-                "saldo_pendiente": f["total"]
+                "saldo_pendiente": f.get("total") or 0
             })
 
             inserted += 1
@@ -189,11 +213,11 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
 
     except Exception as e:
         conn.rollback()
-        raise HTTPException(500, str(e))
+        print("🔥 ERROR sync-from-invoicing:", repr(e))
+        raise
 
     finally:
         cur.close()
-
 
 # ============================================================
 # POST /collections/post-to-accounting

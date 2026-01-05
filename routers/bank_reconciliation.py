@@ -188,6 +188,7 @@ def get_bank_reconciliation(
 # ============================================================
 # POST /bank-reconciliation/{cash_app_id}/reverse
 # REVERSA TOTAL (DELETE REAL)
+# cash_app → incoming_payments (fallback)
 # ============================================================
 @router.post("/{cash_app_id}/reverse")
 def reverse_cash_app(
@@ -214,9 +215,9 @@ def reverse_cash_app(
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
-    # -----------------------------
-    # Verificar existencia
-    # -----------------------------
+    # =========================================================
+    # 1️⃣ INTENTAR cash_app (NO SE TOCA)
+    # =========================================================
     cur.execute("""
         SELECT id
         FROM cash_app
@@ -224,26 +225,61 @@ def reverse_cash_app(
     """, {"id": cash_app_id})
 
     row = cur.fetchone()
-    if not row:
-        cur.close()
-        raise HTTPException(
-            status_code=404,
-            detail="Payment not found in cash_app."
-        )
 
-    # -----------------------------
-    # REVERSA REAL
-    # -----------------------------
+    if row:
+        # -----------------------------
+        # DELETE REAL cash_app
+        # -----------------------------
+        cur.execute("""
+            DELETE FROM cash_app
+            WHERE id = %(id)s
+        """, {"id": cash_app_id})
+
+        conn.commit()
+        cur.close()
+
+        return {
+            "status": "success",
+            "source": "cash_app",
+            "message": "Payment reversed and removed from cash_app.",
+            "id": cash_app_id
+        }
+
+    # =========================================================
+    # 2️⃣ FALLBACK → incoming_payments
+    # =========================================================
     cur.execute("""
-        DELETE FROM cash_app
+        SELECT id
+        FROM incoming_payments
         WHERE id = %(id)s
     """, {"id": cash_app_id})
 
-    conn.commit()
-    cur.close()
+    row = cur.fetchone()
 
-    return {
-        "status": "success",
-        "message": "Payment reversed and removed from cash_app.",
-        "cash_app_id": cash_app_id
-    }
+    if row:
+        # -----------------------------
+        # DELETE REAL incoming_payments
+        # -----------------------------
+        cur.execute("""
+            DELETE FROM incoming_payments
+            WHERE id = %(id)s
+        """, {"id": cash_app_id})
+
+        conn.commit()
+        cur.close()
+
+        return {
+            "status": "success",
+            "source": "incoming_payments",
+            "message": "Payment reversed and removed from incoming_payments.",
+            "id": cash_app_id
+        }
+
+    # =========================================================
+    # 3️⃣ NO EXISTE EN NINGUNA
+    # =========================================================
+    cur.close()
+    raise HTTPException(
+        status_code=404,
+        detail="Payment not found in cash_app or incoming_payments."
+    )

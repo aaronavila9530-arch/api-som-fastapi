@@ -62,9 +62,6 @@ def _safe_int(v, default=0) -> int:
 @router.post("/sync-from-invoicing")
 def sync_collections_from_invoicing(conn=Depends(get_db)):
 
-    # 🔒 ANTI-VACÍO REAL
-    conn.autocommit = True
-
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     inserted = 0
@@ -77,7 +74,7 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
             FROM invoicing i
             WHERE i.tipo_documento IN ('FACTURA', 'NOTA_CREDITO')
               AND i.estado = 'EMITIDA'
-              AND i.total IS NOT NULL
+              AND i.total > 0
               AND NOT EXISTS (
                   SELECT 1
                   FROM collections c
@@ -99,7 +96,7 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
             procesadas.add(key)
 
             try:
-                # SAVEPOINT POR REGISTRO (seguridad)
+                # SAVEPOINT POR REGISTRO
                 cur.execute("SAVEPOINT sp_factura")
 
                 # ---------- fecha_emision ----------
@@ -115,7 +112,7 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
 
                 # ---------- dias_credito ----------
                 try:
-                    dias_credito = int(f.get("termino_pago") or 0)
+                    dias_credito = int(f.get("termino_pago"))
                 except Exception:
                     dias_credito = 0
 
@@ -134,10 +131,6 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
                     bucket = "90+"
 
                 total = float(f.get("total") or 0)
-
-                # ➖ NOTA DE CRÉDITO = saldo negativo
-                if f.get("tipo_documento") == "NOTA_CREDITO":
-                    total = total * -1
 
                 cur.execute("""
                     INSERT INTO collections (
@@ -218,6 +211,8 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
                     "error": str(e)
                 })
 
+        conn.commit()
+
         return {
             "status": "ok",
             "inserted": inserted,
@@ -227,6 +222,7 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
 
     finally:
         cur.close()
+
 # ============================================================
 # POST /collections/post-to-accounting
 # Genera asientos contables para facturas existentes (y futuras que caigan a collections)

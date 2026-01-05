@@ -369,136 +369,6 @@ def search_collections(
         "data": data
     }
 
-# ============================================================
-# POST /collections/disputa
-# Crear una disputa de factura
-# ============================================================
-@router.post("/disputa")
-def crear_disputa(payload: dict, conn=Depends(get_db)):
-    cur = None
-
-    try:
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-
-        # ================================
-        # VALIDAR PAYLOAD MÍNIMO
-        # ================================
-        numero_documento = str(payload.get("numero_documento") or "").strip()
-        codigo_cliente = str(payload.get("codigo_cliente") or "").strip()
-        nombre_cliente = str(payload.get("nombre_cliente") or "").strip()
-        motivo = str(payload.get("motivo") or "").strip()
-        comentario = str(payload.get("comentario") or "").strip()
-
-        if not numero_documento:
-            raise HTTPException(400, "numero_documento es requerido")
-        if not motivo:
-            raise HTTPException(400, "motivo es requerido")
-        if not comentario:
-            raise HTTPException(400, "comentario es requerido")
-
-        # ================================
-        # 1️⃣ dispute_case seguro
-        # ================================
-        cur.execute("""
-            SELECT COALESCE(
-                MAX(
-                    CAST(SUBSTRING(dispute_case FROM '[0-9]+') AS INTEGER)
-                ),
-                0
-            ) AS last_num
-            FROM disputa
-        """)
-        dispute_case = f"DISP-{cur.fetchone()['last_num'] + 1:04d}"
-
-        # ================================
-        # 2️⃣ Fuente de verdad: collections
-        # ================================
-        cur.execute("""
-            SELECT
-                fecha_emision,
-                fecha_vencimiento,
-                total,
-                buque_contenedor,
-                operacion,
-                periodo_operacion,
-                descripcion_servicio
-            FROM collections
-            WHERE numero_documento = %s
-            LIMIT 1
-        """, (numero_documento,))
-        base = cur.fetchone()
-
-        if not base:
-            raise HTTPException(404, "Factura no encontrada en Collections")
-
-        # ================================
-        # 3️⃣ INSERT limpio (SIN payload basura)
-        # ================================
-        cur.execute("""
-            INSERT INTO disputa (
-                dispute_case,
-                numero_documento,
-                codigo_cliente,
-                nombre_cliente,
-                fecha_factura,
-                fecha_vencimiento,
-                monto,
-                motivo,
-                comentario,
-                buque_contenedor,
-                operacion,
-                periodo_operacion,
-                descripcion_servicio,
-                created_at
-            ) VALUES (
-                %s, %s, %s, %s, %s, %s, %s,
-                %s, %s, %s, %s, %s, %s, NOW()
-            )
-        """, (
-            dispute_case,
-            numero_documento,
-            codigo_cliente,
-            nombre_cliente,
-            base["fecha_emision"],
-            base["fecha_vencimiento"],
-            base["total"],
-            motivo,
-            comentario,
-            base["buque_contenedor"],
-            base["operacion"],
-            base["periodo_operacion"],
-            base["descripcion_servicio"]
-        ))
-
-        # ================================
-        # 4️⃣ Marcar disputada
-        # ================================
-        cur.execute("""
-            UPDATE collections
-            SET disputada = TRUE,
-                estado_factura = 'DISPUTADA'
-            WHERE numero_documento = %s
-        """, (numero_documento,))
-
-        conn.commit()
-
-        return {"status": "ok", "dispute_case": dispute_case}
-
-    except HTTPException:
-        if conn:
-            conn.rollback()
-        raise
-
-    except Exception as e:
-        if conn:
-            conn.rollback()
-        raise HTTPException(500, f"Error creando disputa: {repr(e)}")
-
-    finally:
-        if cur:
-            cur.close()
-
-
 
 # ============================================================
 # POST /collections/pago
@@ -812,3 +682,135 @@ def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
     finally:
         if cur:
             cur.close()
+
+
+# ============================================================
+# POST /collections/disputa
+# Crear una disputa de factura
+# ============================================================
+@router.post("/disputa")
+def crear_disputa(payload: dict, conn=Depends(get_db)):
+    cur = None
+
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+
+        # ================================
+        # VALIDAR PAYLOAD MÍNIMO
+        # ================================
+        numero_documento = str(payload.get("numero_documento") or "").strip()
+        codigo_cliente = str(payload.get("codigo_cliente") or "").strip()
+        nombre_cliente = str(payload.get("nombre_cliente") or "").strip()
+        motivo = str(payload.get("motivo") or "").strip()
+        comentario = str(payload.get("comentario") or "").strip()
+
+        if not numero_documento:
+            raise HTTPException(400, "numero_documento es requerido")
+        if not motivo:
+            raise HTTPException(400, "motivo es requerido")
+        if not comentario:
+            raise HTTPException(400, "comentario es requerido")
+
+        # ================================
+        # 1️⃣ dispute_case seguro
+        # ================================
+        cur.execute("""
+            SELECT COALESCE(
+                MAX(
+                    CAST(SUBSTRING(dispute_case FROM '[0-9]+') AS INTEGER)
+                ),
+                0
+            ) AS last_num
+            FROM disputa
+        """)
+        dispute_case = f"DISP-{cur.fetchone()['last_num'] + 1:04d}"
+
+        # ================================
+        # 2️⃣ Fuente de verdad: collections
+        # ================================
+        cur.execute("""
+            SELECT
+                fecha_emision,
+                fecha_vencimiento,
+                total,
+                buque_contenedor,
+                operacion,
+                periodo_operacion,
+                descripcion_servicio
+            FROM collections
+            WHERE numero_documento = %s
+            LIMIT 1
+        """, (numero_documento,))
+        base = cur.fetchone()
+
+        if not base:
+            raise HTTPException(404, "Factura no encontrada en Collections")
+
+        # ================================
+        # 3️⃣ INSERT limpio (SIN payload basura)
+        # ================================
+        cur.execute("""
+            INSERT INTO disputa (
+                dispute_case,
+                numero_documento,
+                codigo_cliente,
+                nombre_cliente,
+                fecha_factura,
+                fecha_vencimiento,
+                monto,
+                motivo,
+                comentario,
+                buque_contenedor,
+                operacion,
+                periodo_operacion,
+                descripcion_servicio,
+                created_at
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s,
+                %s, %s, %s, %s, %s, %s, NOW()
+            )
+        """, (
+            dispute_case,
+            numero_documento,
+            codigo_cliente,
+            nombre_cliente,
+            base["fecha_emision"],
+            base["fecha_vencimiento"],
+            base["total"],
+            motivo,
+            comentario,
+            base["buque_contenedor"],
+            base["operacion"],
+            base["periodo_operacion"],
+            base["descripcion_servicio"]
+        ))
+
+        # ================================
+        # 4️⃣ Marcar disputada
+        # ================================
+        cur.execute("""
+            UPDATE collections
+            SET disputada = TRUE,
+                estado_factura = 'DISPUTADA'
+            WHERE numero_documento = %s
+        """, (numero_documento,))
+
+        conn.commit()
+
+        return {"status": "ok", "dispute_case": dispute_case}
+
+    except HTTPException:
+        if conn:
+            conn.rollback()
+        raise
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        raise HTTPException(500, f"Error creando disputa: {repr(e)}")
+
+    finally:
+        if cur:
+            cur.close()
+
+

@@ -26,7 +26,8 @@ def require_permission(module: str, action: str):
     return checker
 
 # ============================================================
-# GET /bank-reconciliation (LISTADO PAGINADO cash_app)
+# GET /bank-reconciliation
+# LISTADO PAGINADO (cash_app + incoming_payments)
 # ============================================================
 @router.get("")
 def get_bank_reconciliation(
@@ -53,17 +54,17 @@ def get_bank_reconciliation(
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     # -----------------------------
-    # WHERE dinámico
+    # WHERE dinámico (compartido)
     # -----------------------------
     where_clauses = []
     params = {}
 
     if codigo_cliente:
-        where_clauses.append("ca.codigo_cliente = %(codigo_cliente)s")
+        where_clauses.append("codigo_cliente = %(codigo_cliente)s")
         params["codigo_cliente"] = codigo_cliente
 
     if referencia:
-        where_clauses.append("ca.referencia ILIKE %(referencia)s")
+        where_clauses.append("numero_referencia ILIKE %(referencia)s")
         params["referencia"] = f"%{referencia}%"
 
     where_sql = ""
@@ -71,34 +72,52 @@ def get_bank_reconciliation(
         where_sql = "WHERE " + " AND ".join(where_clauses)
 
     # -----------------------------
-    # QUERY PRINCIPAL (cash_app)
+    # QUERY UNIFICADO
     # -----------------------------
     sql = f"""
-        SELECT
-            ca.id,
-            ca.numero_documento,
-            ca.codigo_cliente,
-            ca.nombre_cliente,
-            ca.banco,
-            ca.fecha_pago,
-            ca.comision,
-            ca.referencia,
-            ca.monto_pagado,
-            ca.tipo_aplicacion,
-            ca.created_at,
+        SELECT *
+        FROM (
+            -- ===============================
+            -- CASH APP
+            -- ===============================
+            SELECT
+                ca.id,
+                'CASH_APP' AS origen,
+                ca.codigo_cliente,
+                ca.nombre_cliente,
+                ca.banco,
+                ca.numero_documento AS documento,
+                ca.referencia AS numero_referencia,
+                ca.fecha_pago,
+                ca.monto_pagado AS monto,
+                ca.created_at,
+                CASE
+                    WHEN ca.monto_pagado > 0 THEN 'APLICADO'
+                    ELSE 'DESAPLICADO'
+                END AS estado
+            FROM cash_app ca
 
-            -- Calculados solo para UI
-            0::numeric AS monto_aplicado,
-            ca.monto_pagado AS saldo,
+            UNION ALL
 
-            CASE
-                WHEN ca.monto_pagado > 0 THEN 'APLICADO'
-                ELSE 'DESAPLICADO'
-            END AS estado
-
-        FROM cash_app ca
+            -- ===============================
+            -- INCOMING PAYMENTS
+            -- ===============================
+            SELECT
+                ip.id,
+                ip.origen,
+                ip.codigo_cliente,
+                ip.nombre_cliente,
+                ip.banco,
+                ip.documento,
+                ip.numero_referencia,
+                ip.fecha_pago,
+                ip.monto,
+                ip.created_at,
+                ip.estado
+            FROM incoming_payments ip
+        ) t
         {where_sql}
-        ORDER BY ca.fecha_pago DESC
+        ORDER BY fecha_pago DESC
         LIMIT %(limit)s OFFSET %(offset)s
     """
 
@@ -113,9 +132,18 @@ def get_bank_reconciliation(
     # -----------------------------
     count_sql = f"""
         SELECT COUNT(*) AS total
-        FROM cash_app ca
+        FROM (
+            SELECT ca.id
+            FROM cash_app ca
+
+            UNION ALL
+
+            SELECT ip.id
+            FROM incoming_payments ip
+        ) t
         {where_sql}
     """
+
     cur.execute(count_sql, params)
     total = cur.fetchone()["total"]
 

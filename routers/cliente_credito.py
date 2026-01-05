@@ -131,7 +131,11 @@ def create_credito_cliente(payload: dict, conn=Depends(get_db)):
 # PUT actualizar crédito del cliente
 # ============================================================
 @router.put("/{codigo_cliente}")
-def update_credito_cliente(codigo_cliente: str, payload: dict, conn=Depends(get_db)):
+def update_credito_cliente(
+    codigo_cliente: str,
+    payload: dict,
+    conn=Depends(get_db)
+):
     """
     payload posible:
     {
@@ -142,24 +146,50 @@ def update_credito_cliente(codigo_cliente: str, payload: dict, conn=Depends(get_
         observaciones
     }
     """
+
+    cur = conn.cursor()
+
     try:
-        cur = conn.cursor()
+        # ----------------------------
+        # Normalización defensiva
+        # ----------------------------
+        def clean(value):
+            if value == "" or value is None:
+                return None
+            return value
+
+        termino_pago = clean(payload.get("termino_pago"))
+        limite_credito = clean(payload.get("limite_credito"))
+        estado_credito = clean(payload.get("estado_credito"))
+        hold_manual = clean(payload.get("hold_manual"))
+        observaciones = clean(payload.get("observaciones"))
+
+        # Cast explícito donde aplica
+        if termino_pago is not None:
+            termino_pago = int(termino_pago)
+
+        if limite_credito is not None:
+            limite_credito = float(limite_credito)
+
+        if hold_manual is not None:
+            hold_manual = bool(hold_manual)
 
         cur.execute("""
-            UPDATE cliente_credito SET
-                termino_pago = COALESCE(%s, termino_pago),
+            UPDATE cliente_credito
+            SET
+                termino_pago   = COALESCE(%s, termino_pago),
                 limite_credito = COALESCE(%s, limite_credito),
                 estado_credito = COALESCE(%s, estado_credito),
-                hold_manual = COALESCE(%s, hold_manual),
-                observaciones = COALESCE(%s, observaciones),
-                updated_at = CURRENT_TIMESTAMP
+                hold_manual    = COALESCE(%s, hold_manual),
+                observaciones  = COALESCE(%s, observaciones),
+                updated_at     = CURRENT_TIMESTAMP
             WHERE codigo_cliente = %s
         """, (
-            payload.get("termino_pago"),
-            payload.get("limite_credito"),
-            payload.get("estado_credito"),
-            payload.get("hold_manual"),
-            payload.get("observaciones"),
+            termino_pago,
+            limite_credito,
+            estado_credito,
+            hold_manual,
+            observaciones,
             codigo_cliente
         ))
 
@@ -170,15 +200,25 @@ def update_credito_cliente(codigo_cliente: str, payload: dict, conn=Depends(get_
             )
 
         conn.commit()
-        cur.close()
 
-        return {"message": "Configuración crediticia actualizada"}
+        return {
+            "status": "ok",
+            "message": "Configuración crediticia actualizada"
+        }
 
     except HTTPException:
+        conn.rollback()
         raise
+
     except Exception as e:
         conn.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error actualizando crédito: {str(e)}"
+        )
+
+    finally:
+        cur.close()
 
 @router.delete("/{codigo_cliente}")
 def delete_credito_cliente(codigo_cliente: str, conn=Depends(get_db)):

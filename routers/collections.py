@@ -375,6 +375,7 @@ def search_collections(
 # Aplicar pago o nota de crédito (parcial o total)
 # ============================================================
 @router.post("/pago")
+@router.post("/pago/")
 def aplicar_pago(payload: dict, conn=Depends(get_db)):
 
     cur = None
@@ -515,11 +516,13 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
         if cur:
             cur.close()
 
+
 # ============================================================
 # POST /collections/aplicar-nota-credito
 # Aplica una Nota de Crédito a una Factura
 # ============================================================
 @router.post("/aplicar-nota-credito")
+@router.post("/aplicar-nota-credito/")
 def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
 
     cur = None
@@ -621,7 +624,7 @@ def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
         """, (nota_numero,))
 
         # ====================================================
-        # 6️⃣ REGISTRAR EN CASH_APP (MISMA LÓGICA QUE PAGO)
+        # 6️⃣ REGISTRAR EN CASH_APP
         # ====================================================
         cur.execute("""
             INSERT INTO cash_app (

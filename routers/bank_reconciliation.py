@@ -27,7 +27,7 @@ def require_permission(module: str, action: str):
 
 # ============================================================
 # GET /bank-reconciliation
-# LISTADO PAGINADO (cash_app + incoming_payments)
+# LISTADO PAGINADO cash_app + incoming_payments
 # ============================================================
 @router.get("")
 def get_bank_reconciliation(
@@ -56,7 +56,6 @@ def get_bank_reconciliation(
     # ============================================================
     # ===================== CASH_APP (NO TOCAR) ==================
     # ============================================================
-
     where_clauses = []
     params = {}
 
@@ -75,15 +74,14 @@ def get_bank_reconciliation(
     cash_sql = f"""
         SELECT
             ca.id,
-            'CASH_APP' AS origen,
-            ca.numero_documento AS documento,
+            ca.numero_documento,
             ca.codigo_cliente,
             ca.nombre_cliente,
             ca.banco,
             ca.fecha_pago,
             ca.comision,
-            ca.referencia AS numero_referencia,
-            ca.monto_pagado AS monto,
+            ca.referencia,
+            ca.monto_pagado,
             ca.tipo_aplicacion,
             ca.created_at,
 
@@ -117,9 +115,8 @@ def get_bank_reconciliation(
     total_cash = cur.fetchone()["total"]
 
     # ============================================================
-    # ================= INCOMING_PAYMENTS (NUEVO) ================
+    # ================= INCOMING_PAYMENTS (ADAPTADO) =============
     # ============================================================
-
     where_ip = []
     params_ip = {}
 
@@ -138,16 +135,15 @@ def get_bank_reconciliation(
     incoming_sql = f"""
         SELECT
             ip.id,
-            ip.origen,
-            ip.documento,
+            ip.documento AS numero_documento,
             ip.codigo_cliente,
             ip.nombre_cliente,
             ip.banco,
             ip.fecha_pago,
             NULL::numeric AS comision,
-            ip.numero_referencia,
-            ip.monto,
-            NULL::text AS tipo_aplicacion,
+            ip.numero_referencia AS referencia,
+            ip.monto AS monto_pagado,
+            'INCOMING' AS tipo_aplicacion,
             ip.created_at,
 
             -- UI

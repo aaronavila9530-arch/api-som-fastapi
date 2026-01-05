@@ -85,7 +85,7 @@ def get_bank_reconciliation(
             ca.tipo_aplicacion,
             ca.created_at,
 
-            -- UI
+            -- Calculados solo para UI
             0::numeric AS monto_aplicado,
             ca.monto_pagado AS saldo,
 
@@ -115,7 +115,7 @@ def get_bank_reconciliation(
     total_cash = cur.fetchone()["total"]
 
     # ============================================================
-    # ================= INCOMING_PAYMENTS (ADAPTADO) =============
+    # ================= INCOMING_PAYMENTS (AGREGADO) =============
     # ============================================================
     where_ip = []
     params_ip = {}
@@ -134,7 +134,7 @@ def get_bank_reconciliation(
 
     incoming_sql = f"""
         SELECT
-            ip.id,
+            'incoming_' || ip.id AS id,
             ip.documento AS numero_documento,
             ip.codigo_cliente,
             ip.nombre_cliente,
@@ -143,10 +143,10 @@ def get_bank_reconciliation(
             NULL::numeric AS comision,
             ip.numero_referencia AS referencia,
             ip.monto AS monto_pagado,
-            'INCOMING' AS tipo_aplicacion,
+            'PAGO' AS tipo_aplicacion,
             ip.created_at,
 
-            -- UI
+            -- Calculados solo para UI
             0::numeric AS monto_aplicado,
             ip.monto AS saldo,
             ip.estado

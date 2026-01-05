@@ -645,7 +645,6 @@ def aplicar_pago(payload: dict, conn=Depends(get_db)):
         if cur:
             cur.close()
 
-
 # ============================================================
 # POST /collections/aplicar-nota-credito
 # Aplica una Nota de Crédito a una Factura
@@ -695,7 +694,7 @@ def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
             WHERE numero_documento = %s
               AND codigo_cliente = %s
               AND tipo_documento = 'NOTA_CREDITO'
-              AND estado_factura != 'APLICADA'
+              AND estado_factura = 'PENDIENTE_PAGO'
             FOR UPDATE
         """, (nota_numero, codigo_cliente))
 
@@ -703,7 +702,7 @@ def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
         if not nota:
             raise HTTPException(404, "Nota de crédito no disponible o ya aplicada")
 
-        monto_nc = float(nota["saldo_pendiente"] or nota["total"] or 0)
+        monto_nc = float(nota["saldo_pendiente"] or 0)
 
         if monto_nc <= 0:
             raise HTTPException(400, "Monto inválido en la nota de crédito")
@@ -752,7 +751,7 @@ def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
         """, (nota_numero,))
 
         # ====================================================
-        # 6️⃣ REGISTRAR EN CASH_APP (AUDITORÍA)
+        # 6️⃣ REGISTRAR EN CASH_APP (MISMA LÓGICA QUE PAGO)
         # ====================================================
         cur.execute("""
             INSERT INTO cash_app (
@@ -768,7 +767,7 @@ def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
                 created_at
             ) VALUES (
                 %s, %s, %s,
-                'NOTA_CREDITO',
+                %s,
                 CURRENT_DATE,
                 0,
                 %s,
@@ -780,6 +779,7 @@ def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
             factura_numero,
             codigo_cliente,
             factura.get("nombre_cliente"),
+            "NOTA_CREDITO",
             f"NC {nota_numero}",
             monto_nc
         ))
@@ -812,5 +812,3 @@ def aplicar_nota_credito(payload: dict, conn=Depends(get_db)):
     finally:
         if cur:
             cur.close()
-
-

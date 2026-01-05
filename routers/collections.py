@@ -65,9 +65,6 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     try:
-        # -------------------------------------------------
-        # 1. Obtener facturas válidas NO sincronizadas
-        # -------------------------------------------------
         cur.execute("""
             SELECT *
             FROM invoicing i
@@ -83,31 +80,37 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
         """)
 
         facturas = cur.fetchall()
-
-        inserted = 0
         hoy = date.today()
+        inserted = 0
 
-        # -------------------------------------------------
-        # 2. Procesar una por una (blindado)
-        # -------------------------------------------------
+        # 🔒 evita duplicados en la misma corrida
+        procesadas = set()
+
         for f in facturas:
 
-            # ---------- Fecha emisión segura ----------
-            fecha_emision = f.get("fecha_emision")
+            key = (f.get("numero_documento"), f.get("codigo_cliente"))
+            if key in procesadas:
+                continue
+            procesadas.add(key)
 
-            if isinstance(fecha_emision, datetime):
-                fecha_emision = fecha_emision.date()
-            elif isinstance(fecha_emision, str):
-                fecha_emision = datetime.fromisoformat(fecha_emision).date()
-            elif not isinstance(fecha_emision, date):
-                raise ValueError(f"fecha_emision inválida: {fecha_emision}")
+            # ---------- fecha_emision ----------
+            fe = f.get("fecha_emision")
+            if isinstance(fe, datetime):
+                fe = fe.date()
+            elif isinstance(fe, date):
+                pass
+            elif isinstance(fe, str):
+                fe = datetime.fromisoformat(fe).date()
+            else:
+                continue  # ignora basura
 
-            # ---------- Días de crédito ----------
-            dias_credito = int(f.get("termino_pago") or 0)
+            # ---------- termino_pago ----------
+            try:
+                dias_credito = int(f.get("termino_pago"))
+            except Exception:
+                dias_credito = 0
 
-            fecha_vencimiento = fecha_emision + timedelta(days=dias_credito)
-
-            # ---------- Aging ----------
+            fecha_vencimiento = fe + timedelta(days=dias_credito)
             aging_dias = (hoy - fecha_vencimiento).days
 
             if aging_dias <= 0:
@@ -123,9 +126,6 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
 
             total = float(f.get("total") or 0)
 
-            # -------------------------------------------------
-            # 3. Insertar en collections
-            # -------------------------------------------------
             cur.execute("""
                 INSERT INTO collections (
                     numero_documento,
@@ -149,8 +149,7 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
                     disputada,
                     saldo_pendiente,
                     created_at
-                )
-                VALUES (
+                ) VALUES (
                     %(numero_documento)s,
                     %(codigo_cliente)s,
                     %(nombre_cliente)s,
@@ -162,15 +161,15 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
                     %(total)s,
                     %(dias_credito)s,
                     %(aging_dias)s,
-                    %(bucket_aging)s,
+                    %(bucket)s,
                     %(num_informe)s,
-                    %(buque_contenedor)s,
+                    %(buque)s,
                     %(operacion)s,
-                    %(periodo_operacion)s,
-                    %(descripcion_servicio)s,
+                    %(periodo)s,
+                    %(descripcion)s,
                     'PENDIENTE_PAGO',
                     FALSE,
-                    %(saldo_pendiente)s,
+                    %(saldo)s,
                     NOW()
                 )
             """, {
@@ -179,36 +178,29 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
                 "nombre_cliente": f.get("nombre_cliente"),
                 "tipo_factura": f.get("tipo_factura"),
                 "tipo_documento": f.get("tipo_documento"),
-                "fecha_emision": fecha_emision,
+                "fecha_emision": fe,
                 "fecha_vencimiento": fecha_vencimiento,
                 "moneda": f.get("moneda"),
                 "total": total,
                 "dias_credito": dias_credito,
                 "aging_dias": aging_dias,
-                "bucket_aging": bucket,
+                "bucket": bucket,
                 "num_informe": f.get("num_informe"),
-                "buque_contenedor": f.get("buque_contenedor"),
+                "buque": f.get("buque_contenedor"),
                 "operacion": f.get("operacion"),
-                "periodo_operacion": f.get("periodo_operacion"),
-                "descripcion_servicio": f.get("descripcion_servicio"),
-                "saldo_pendiente": total
+                "periodo": f.get("periodo_operacion"),
+                "descripcion": f.get("descripcion_servicio"),
+                "saldo": total
             })
 
             inserted += 1
 
         conn.commit()
-
-        return {
-            "status": "ok",
-            "inserted": inserted
-        }
+        return {"status": "ok", "inserted": inserted}
 
     except Exception as e:
         conn.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Sync invoicing → collections failed: {str(e)}"
-        )
+        raise HTTPException(500, f"SYNC FAILED: {str(e)}")
 
     finally:
         cur.close()

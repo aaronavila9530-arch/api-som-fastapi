@@ -423,6 +423,9 @@ def get_credito_cliente(
 # PUT /cliente-credito/{codigo_cliente}
 # Actualizar configuración crediticia
 # ============================================================
+# ============================================================
+# PUT actualizar crédito del cliente
+# ============================================================
 @router.put("/{codigo_cliente}")
 def update_credito_cliente(
     codigo_cliente: str,
@@ -432,38 +435,82 @@ def update_credito_cliente(
     cur = conn.cursor()
 
     try:
+        # ----------------------------
+        # Normalización fuerte
+        # ----------------------------
+        def clean(value):
+            if value is None:
+                return None
+            if isinstance(value, str) and value.strip() == "":
+                return None
+            return value
+
+        termino_pago   = clean(payload.get("termino_pago"))
+        limite_credito = clean(payload.get("limite_credito"))
+        moneda         = clean(payload.get("moneda"))
+        estado_credito = clean(payload.get("estado_credito"))
+        hold_manual    = clean(payload.get("hold_manual"))
+        observaciones  = clean(payload.get("observaciones"))
+
+        # ----------------------------
+        # Cast explícito y seguro
+        # ----------------------------
+        if termino_pago is not None:
+            termino_pago = int(termino_pago)
+
+        if limite_credito is not None:
+            limite_credito = float(limite_credito)
+
+        if hold_manual is not None:
+            if isinstance(hold_manual, str):
+                hold_manual = hold_manual.lower() in ("1", "true", "yes", "on")
+            else:
+                hold_manual = bool(hold_manual)
+
         cur.execute("""
             UPDATE cliente_credito
             SET
-                termino_pago   = %s,
-                limite_credito = %s,
-                moneda          = %s,
-                estado_credito = %s,
-                hold_manual    = %s,
-                observaciones  = %s,
+                termino_pago   = COALESCE(%s, termino_pago),
+                limite_credito = COALESCE(%s, limite_credito),
+                moneda         = COALESCE(%s, moneda),
+                estado_credito = COALESCE(%s, estado_credito),
+                hold_manual    = COALESCE(%s, hold_manual),
+                observaciones  = COALESCE(%s, observaciones),
                 updated_at     = CURRENT_TIMESTAMP
             WHERE codigo_cliente = %s
         """, (
-            payload["termino_pago"],
-            payload["limite_credito"],
-            payload["moneda"],
-            payload["estado_credito"],
-            payload["hold_manual"],
-            payload.get("observaciones"),
+            termino_pago,
+            limite_credito,
+            moneda,
+            estado_credito,
+            hold_manual,
+            observaciones,
             codigo_cliente
         ))
 
         if cur.rowcount == 0:
-            raise HTTPException(404, "Cliente no encontrado")
+            raise HTTPException(
+                status_code=404,
+                detail="Cliente sin configuración crediticia"
+            )
 
         conn.commit()
 
-        return {"status": "ok"}
+        return {
+            "status": "ok",
+            "message": "Crédito actualizado correctamente"
+        }
+
+    except HTTPException:
+        conn.rollback()
+        raise
 
     except Exception as e:
         conn.rollback()
-        raise HTTPException(500, str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error actualizando crédito: {str(e)}"
+        )
 
     finally:
         cur.close()
-

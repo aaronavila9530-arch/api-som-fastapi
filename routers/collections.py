@@ -57,10 +57,13 @@ def _safe_int(v, default=0) -> int:
 
 # ============================================================
 # POST /collections/sync-from-invoicing
-# Sincroniza facturas EMITIDAS → Collections
+# Sincroniza FACTURA + NOTA_CREDITO EMITIDAS → Collections
 # ============================================================
 @router.post("/sync-from-invoicing")
 def sync_collections_from_invoicing(conn=Depends(get_db)):
+
+    # 🔒 ANTI-VACÍO REAL
+    conn.autocommit = True
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -72,9 +75,9 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
         cur.execute("""
             SELECT *
             FROM invoicing i
-            WHERE i.tipo_documento = 'FACTURA'
+            WHERE i.tipo_documento IN ('FACTURA', 'NOTA_CREDITO')
               AND i.estado = 'EMITIDA'
-              AND i.total > 0
+              AND i.total IS NOT NULL
               AND NOT EXISTS (
                   SELECT 1
                   FROM collections c
@@ -96,7 +99,7 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
             procesadas.add(key)
 
             try:
-                # SAVEPOINT POR FACTURA
+                # SAVEPOINT POR REGISTRO (seguridad)
                 cur.execute("SAVEPOINT sp_factura")
 
                 # ---------- fecha_emision ----------
@@ -112,7 +115,7 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
 
                 # ---------- dias_credito ----------
                 try:
-                    dias_credito = int(f.get("termino_pago"))
+                    dias_credito = int(f.get("termino_pago") or 0)
                 except Exception:
                     dias_credito = 0
 
@@ -131,6 +134,10 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
                     bucket = "90+"
 
                 total = float(f.get("total") or 0)
+
+                # ➖ NOTA DE CRÉDITO = saldo negativo
+                if f.get("tipo_documento") == "NOTA_CREDITO":
+                    total = total * -1
 
                 cur.execute("""
                     INSERT INTO collections (
@@ -211,13 +218,11 @@ def sync_collections_from_invoicing(conn=Depends(get_db)):
                     "error": str(e)
                 })
 
-        conn.commit()
-
         return {
             "status": "ok",
             "inserted": inserted,
             "skipped": skipped,
-            "errors": errors[:5]  # no saturar respuesta
+            "errors": errors[:5]
         }
 
     finally:

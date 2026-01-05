@@ -418,13 +418,8 @@ def get_credito_cliente(
 
 
 
-
 # ============================================================
-# PUT /cliente-credito/{codigo_cliente}
-# Actualizar configuración crediticia
-# ============================================================
-# ============================================================
-# PUT actualizar crédito del cliente
+# PUT actualizar crédito del cliente (BLINDADO REAL)
 # ============================================================
 @router.put("/{codigo_cliente}")
 def update_credito_cliente(
@@ -441,8 +436,10 @@ def update_credito_cliente(
         def clean(value):
             if value is None:
                 return None
-            if isinstance(value, str) and value.strip() == "":
-                return None
+            if isinstance(value, str):
+                value = value.strip()
+                if value == "":
+                    return None
             return value
 
         termino_pago   = clean(payload.get("termino_pago"))
@@ -453,7 +450,7 @@ def update_credito_cliente(
         observaciones  = clean(payload.get("observaciones"))
 
         # ----------------------------
-        # Cast explícito y seguro
+        # Cast seguro
         # ----------------------------
         if termino_pago is not None:
             termino_pago = int(termino_pago)
@@ -467,6 +464,20 @@ def update_credito_cliente(
             else:
                 hold_manual = bool(hold_manual)
 
+        # ----------------------------
+        # NORMALIZACIÓN CRÍTICA (FIX 500)
+        # ----------------------------
+        if estado_credito is not None:
+            estado_credito = estado_credito.upper()
+            if estado_credito not in ("ACTIVE", "INACTIVE", "HOLD"):
+                estado_credito = None  # evita crash de ENUM
+
+        if moneda is not None:
+            moneda = moneda.upper()
+
+        # ----------------------------
+        # UPDATE SEGURO
+        # ----------------------------
         cur.execute("""
             UPDATE cliente_credito
             SET

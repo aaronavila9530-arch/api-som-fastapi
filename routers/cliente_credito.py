@@ -139,61 +139,54 @@ def update_credito_cliente(
     cur = conn.cursor()
 
     try:
-        # ----------------------------
-        # Normalización fuerte
-        # ----------------------------
-        def clean(value):
-            if value is None:
-                return None
-            if isinstance(value, str) and value.strip() == "":
-                return None
-            return value
+        fields = []
+        values = []
 
-        termino_pago = clean(payload.get("termino_pago"))
-        limite_credito = clean(payload.get("limite_credito"))
-        estado_credito = clean(payload.get("estado_credito"))
-        hold_manual = clean(payload.get("hold_manual"))
-        observaciones = clean(payload.get("observaciones"))
+        def add(field, value):
+            fields.append(f"{field} = %s")
+            values.append(value)
 
         # ----------------------------
-        # Cast explícito y seguro
+        # Normalización segura
         # ----------------------------
-        if termino_pago is not None:
-            termino_pago = int(termino_pago)
+        if "termino_pago" in payload and payload["termino_pago"] not in ("", None):
+            add("termino_pago", int(payload["termino_pago"]))
 
-        if limite_credito is not None:
-            limite_credito = float(limite_credito)
+        if "limite_credito" in payload and payload["limite_credito"] not in ("", None):
+            add("limite_credito", float(payload["limite_credito"]))
 
-        if hold_manual is not None:
-            if isinstance(hold_manual, str):
-                hold_manual = hold_manual.lower() in ("1", "true", "yes", "on")
-            else:
-                hold_manual = bool(hold_manual)
+        if "moneda" in payload and payload["moneda"]:
+            add("moneda", payload["moneda"].upper())
 
-        cur.execute("""
+        if "estado_credito" in payload and payload["estado_credito"]:
+            estado = payload["estado_credito"].upper()
+            if estado not in ("ACTIVE", "INACTIVE", "HOLD"):
+                raise HTTPException(400, "Estado de crédito inválido")
+            add("estado_credito", estado)
+
+        if "hold_manual" in payload:
+            add("hold_manual", bool(payload["hold_manual"]))
+
+        if "observaciones" in payload:
+            add("observaciones", payload["observaciones"].strip())
+
+        if not fields:
+            raise HTTPException(400, "No hay datos para actualizar")
+
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+
+        sql = f"""
             UPDATE cliente_credito
-            SET
-                termino_pago   = COALESCE(%s, termino_pago),
-                limite_credito = COALESCE(%s, limite_credito),
-                estado_credito = COALESCE(%s, estado_credito),
-                hold_manual    = COALESCE(%s, hold_manual),
-                observaciones  = COALESCE(%s, observaciones),
-                updated_at     = CURRENT_TIMESTAMP
+            SET {", ".join(fields)}
             WHERE codigo_cliente = %s
-        """, (
-            termino_pago,
-            limite_credito,
-            estado_credito,
-            hold_manual,
-            observaciones,
-            codigo_cliente
-        ))
+        """
+
+        values.append(codigo_cliente)
+
+        cur.execute(sql, values)
 
         if cur.rowcount == 0:
-            raise HTTPException(
-                status_code=404,
-                detail="Cliente sin configuración crediticia"
-            )
+            raise HTTPException(404, "Cliente sin configuración crediticia")
 
         conn.commit()
 
@@ -418,81 +411,3 @@ def get_credito_cliente(
 
 
 
-@router.put("/{codigo_cliente}")
-def update_credito_cliente(
-    codigo_cliente: str,
-    payload: dict,
-    conn=Depends(get_db)
-):
-    cur = conn.cursor()
-
-    try:
-        fields = []
-        values = []
-
-        def add(field, value):
-            fields.append(f"{field} = %s")
-            values.append(value)
-
-        # ----------------------------
-        # Normalización segura
-        # ----------------------------
-        if "termino_pago" in payload and payload["termino_pago"] not in ("", None):
-            add("termino_pago", int(payload["termino_pago"]))
-
-        if "limite_credito" in payload and payload["limite_credito"] not in ("", None):
-            add("limite_credito", float(payload["limite_credito"]))
-
-        if "moneda" in payload and payload["moneda"]:
-            add("moneda", payload["moneda"].upper())
-
-        if "estado_credito" in payload and payload["estado_credito"]:
-            estado = payload["estado_credito"].upper()
-            if estado not in ("ACTIVE", "INACTIVE", "HOLD"):
-                raise HTTPException(400, "Estado de crédito inválido")
-            add("estado_credito", estado)
-
-        if "hold_manual" in payload:
-            add("hold_manual", bool(payload["hold_manual"]))
-
-        if "observaciones" in payload:
-            add("observaciones", payload["observaciones"].strip())
-
-        if not fields:
-            raise HTTPException(400, "No hay datos para actualizar")
-
-        fields.append("updated_at = CURRENT_TIMESTAMP")
-
-        sql = f"""
-            UPDATE cliente_credito
-            SET {", ".join(fields)}
-            WHERE codigo_cliente = %s
-        """
-
-        values.append(codigo_cliente)
-
-        cur.execute(sql, values)
-
-        if cur.rowcount == 0:
-            raise HTTPException(404, "Cliente sin configuración crediticia")
-
-        conn.commit()
-
-        return {
-            "status": "ok",
-            "message": "Crédito actualizado correctamente"
-        }
-
-    except HTTPException:
-        conn.rollback()
-        raise
-
-    except Exception as e:
-        conn.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error actualizando crédito: {str(e)}"
-        )
-
-    finally:
-        cur.close()

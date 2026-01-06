@@ -69,7 +69,7 @@ def sync_collections_to_accounting(conn):
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     # ============================================================
-    # 1️⃣ TC DEL DÍA
+    # 1️⃣ TC DEL DÍA (NO SE TOCA)
     # ============================================================
     today = date.today()
 
@@ -86,7 +86,7 @@ def sync_collections_to_accounting(conn):
     tc = float(row_tc["rate"])
 
     # ============================================================
-    # 2️⃣ COLLECTIONS  (🔒 created_at INCLUIDO)
+    # 2️⃣ COLLECTIONS (created_at COMO FUENTE CONTABLE)
     # ============================================================
     cur.execute("""
         SELECT
@@ -114,20 +114,19 @@ def sync_collections_to_accounting(conn):
             continue
 
         # ========================================================
-        # 🔥 PERIODO CONTABLE DESDE created_at (FIX DEFINITIVO)
+        # 🔥 PERIODO CONTABLE DESDE created_at
         # ========================================================
         created_at = c.get("created_at") or today
 
         if isinstance(created_at, datetime):
-            fecha_periodo = created_at.date()
+            fecha = created_at.date()
         else:
-            fecha_periodo = created_at
+            fecha = created_at
 
-        period = fecha_periodo.strftime("%Y-%m")
-        fecha = fecha_periodo   # entry_date alineado al periodo
+        period = fecha.strftime("%Y-%m")
 
         # ========================================================
-        # PAÍS
+        # PAÍS DEL CLIENTE
         # ========================================================
         cur.execute("""
             SELECT pais
@@ -170,9 +169,10 @@ def sync_collections_to_accounting(conn):
         entry_id = row_entry["id"] if row_entry else None
 
         # ========================================================
-        # CREAR ASIENTO (NUEVO PERIODO)
+        # CREAR ASIENTO CONTABLE
         # ========================================================
         if not entry_id:
+
             cur.execute("""
                 INSERT INTO accounting_entries
                 (entry_date, period, description, origin, origin_id, created_by)
@@ -181,26 +181,30 @@ def sync_collections_to_accounting(conn):
             """, (fecha, period, detail_text, collection_id))
             entry_id = cur.fetchone()["id"]
 
-            # CxC
+            # ---------------- CxC ----------------
             cur.execute("""
                 INSERT INTO accounting_lines
-                VALUES (DEFAULT, %s, '1101', 'Cuentas por cobrar', %s, 0, %s)
+                (entry_id, account_code, account_name, debit, credit, line_description)
+                VALUES (%s, '1101', 'Cuentas por cobrar', %s, 0, %s)
             """, (entry_id, total_crc, detail_text))
 
-            # Ingresos
+            # ---------------- Ingresos ----------------
             cur.execute("""
                 INSERT INTO accounting_lines
-                VALUES (DEFAULT, %s, '4101', 'Ingresos por servicios', 0, %s, %s)
+                (entry_id, account_code, account_name, debit, credit, line_description)
+                VALUES (%s, '4101', 'Ingresos por servicios', 0, %s, %s)
             """, (entry_id, subtotal, detail_text))
 
-            # IVA
+            # ---------------- IVA ----------------
             if iva > 0:
                 cur.execute("""
                     INSERT INTO accounting_lines
-                    VALUES (DEFAULT, %s, '2108', 'IVA por pagar', 0, %s, %s)
+                    (entry_id, account_code, account_name, debit, credit, line_description)
+                    VALUES (%s, '2108', 'IVA por pagar', 0, %s, %s)
                 """, (entry_id, iva, detail_text))
 
     conn.commit()
+
 
 
 

@@ -64,7 +64,7 @@ def create_accounting_entry(
 def sync_collections_to_accounting(conn):
 
     from psycopg2.extras import RealDictCursor
-    from datetime import date
+    from datetime import date, datetime
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -86,7 +86,7 @@ def sync_collections_to_accounting(conn):
     tc = float(row_tc["rate"])
 
     # ============================================================
-    # 2️⃣ COLLECTIONS
+    # 2️⃣ COLLECTIONS  (🔒 created_at INCLUIDO)
     # ============================================================
     cur.execute("""
         SELECT
@@ -94,6 +94,7 @@ def sync_collections_to_accounting(conn):
             c.numero_documento,
             c.nombre_cliente,
             c.fecha_emision,
+            c.created_at,
             c.moneda,
             c.total
         FROM collections c
@@ -112,8 +113,18 @@ def sync_collections_to_accounting(conn):
         if total_raw <= 0:
             continue
 
-        fecha = c.get("fecha_emision") or today
-        period = fecha.strftime("%Y-%m")   # 🔒 PERIODO REAL
+        # ========================================================
+        # 🔥 PERIODO CONTABLE DESDE created_at (FIX DEFINITIVO)
+        # ========================================================
+        created_at = c.get("created_at") or today
+
+        if isinstance(created_at, datetime):
+            fecha_periodo = created_at.date()
+        else:
+            fecha_periodo = created_at
+
+        period = fecha_periodo.strftime("%Y-%m")
+        fecha = fecha_periodo   # entry_date alineado al periodo
 
         # ========================================================
         # PAÍS

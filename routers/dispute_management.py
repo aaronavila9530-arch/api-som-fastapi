@@ -52,11 +52,6 @@ DISPUTE_STATUSES = [
     "Resolved"
 ]
 
-# ============================================================
-# GET /dispute-management
-# LISTADO DE GESTIONES (SOLO LAS EXISTENTES)
-# ============================================================
-
 @router.get("")
 def list_dispute_management(
     cliente: Optional[str] = Query(None),
@@ -80,6 +75,7 @@ def list_dispute_management(
             dm.status,
             dm.disputed_amount,
             dm.dispute_closed_at,
+
             d.id                AS dispute_id,
             d.dispute_case,
             d.numero_documento,
@@ -88,7 +84,17 @@ def list_dispute_management(
             d.fecha_factura,
             d.fecha_vencimiento,
             d.monto,
+
+            -- ⬇⬇⬇ ESTO ES LO QUE FALTABA ⬇⬇⬇
+            d.motivo,
+            d.comentario,
+            d.buque_contenedor,
+            d.operacion,
+            d.periodo_operacion,
+            d.descripcion_servicio,
+
             d.created_at,
+
             (
                 SELECT comentario
                 FROM dispute_history h
@@ -96,6 +102,7 @@ def list_dispute_management(
                 ORDER BY h.created_at DESC
                 LIMIT 1
             ) AS ultimo_comentario
+
         FROM dispute_management dm
         JOIN disputa d ON d.id = dm.dispute_id
         {where}

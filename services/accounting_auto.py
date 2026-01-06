@@ -69,7 +69,7 @@ def sync_collections_to_accounting(conn):
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
     # ============================================================
-    # 1️⃣ OBTENER TC DEL DÍA (OBLIGATORIO)
+    # 1️⃣ TC DEL DÍA
     # ============================================================
     today = date.today()
 
@@ -79,18 +79,14 @@ def sync_collections_to_accounting(conn):
         WHERE rate_date = %s
         LIMIT 1
     """, (today,))
-
     row_tc = cur.fetchone()
     if not row_tc:
-        raise Exception(
-            "Tipo de cambio del día no encontrado. "
-            "No se puede contabilizar Collections."
-        )
+        raise Exception("Tipo de cambio del día no encontrado.")
 
     tc = float(row_tc["rate"])
 
     # ============================================================
-    # 2️⃣ TRAER COLLECTIONS
+    # 2️⃣ COLLECTIONS
     # ============================================================
     cur.execute("""
         SELECT
@@ -109,7 +105,6 @@ def sync_collections_to_accounting(conn):
 
         collection_id = c["id"]
         numero = c["numero_documento"]
-
         nombre_cliente = (c.get("nombre_cliente") or "").strip()
         moneda = (c.get("moneda") or "").upper()
 
@@ -117,14 +112,11 @@ def sync_collections_to_accounting(conn):
         if total_raw <= 0:
             continue
 
-        # ========================================================
-        # 🔒 FECHA Y PERIODO (ÚNICO CAMBIO FUNCIONAL)
-        # ========================================================
         fecha = c.get("fecha_emision") or today
-        period = fecha.strftime("%Y-%m")   # ← YYYY-MM real (2025-12 / 2026-01)
+        period = fecha.strftime("%Y-%m")   # 🔒 PERIODO REAL
 
         # ========================================================
-        # 3️⃣ PAÍS DEL CLIENTE
+        # PAÍS
         # ========================================================
         cur.execute("""
             SELECT pais
@@ -136,15 +128,12 @@ def sync_collections_to_accounting(conn):
         pais = (cli["pais"] if cli else "").strip().lower()
 
         # ========================================================
-        # 4️⃣ CONVERSIÓN MONEDA
+        # MONEDA
         # ========================================================
-        if moneda == "USD":
-            total_crc = round(total_raw * tc, 2)
-        else:
-            total_crc = round(total_raw, 2)
+        total_crc = round(total_raw * tc, 2) if moneda == "USD" else round(total_raw, 2)
 
         # ========================================================
-        # 5️⃣ IVA
+        # IVA
         # ========================================================
         if pais == "costa rica":
             subtotal = round(total_crc / 1.13, 2)
@@ -153,133 +142,52 @@ def sync_collections_to_accounting(conn):
             subtotal = total_crc
             iva = 0.0
 
+        detail_text = f"From Collections {numero}"
+
         # ========================================================
-        # 6️⃣ ¿EXISTE ASIENTO?
+        # 🔥 EXISTENCIA POR (ORIGIN + ID + PERIOD)
         # ========================================================
         cur.execute("""
             SELECT id
             FROM accounting_entries
             WHERE origin = 'COLLECTIONS'
               AND origin_id = %s
+              AND period = %s
             LIMIT 1
-        """, (collection_id,))
+        """, (collection_id, period))
         row_entry = cur.fetchone()
         entry_id = row_entry["id"] if row_entry else None
 
-        detail_text = f"From Collections {numero}"
-
         # ========================================================
-        # 7️⃣ CREAR ASIENTO
+        # CREAR ASIENTO (NUEVO PERIODO)
         # ========================================================
         if not entry_id:
-
             cur.execute("""
-                INSERT INTO accounting_entries (
-                    entry_date,
-                    period,
-                    description,
-                    origin,
-                    origin_id,
-                    created_by
-                )
-                VALUES (%s, %s, %s, %s, %s, 'SYSTEM')
+                INSERT INTO accounting_entries
+                (entry_date, period, description, origin, origin_id, created_by)
+                VALUES (%s, %s, %s, 'COLLECTIONS', %s, 'SYSTEM')
                 RETURNING id
-            """, (
-                fecha,
-                period,
-                detail_text,
-                "COLLECTIONS",
-                collection_id
-            ))
+            """, (fecha, period, detail_text, collection_id))
             entry_id = cur.fetchone()["id"]
 
             # CxC
             cur.execute("""
                 INSERT INTO accounting_lines
-                (entry_id, account_code, account_name, debit, credit, line_description)
-                VALUES (%s, '1101', 'Cuentas por cobrar', %s, 0, %s)
+                VALUES (DEFAULT, %s, '1101', 'Cuentas por cobrar', %s, 0, %s)
             """, (entry_id, total_crc, detail_text))
 
             # Ingresos
             cur.execute("""
                 INSERT INTO accounting_lines
-                (entry_id, account_code, account_name, debit, credit, line_description)
-                VALUES (%s, '4101', 'Ingresos por servicios', 0, %s, %s)
+                VALUES (DEFAULT, %s, '4101', 'Ingresos por servicios', 0, %s, %s)
             """, (entry_id, subtotal, detail_text))
 
             # IVA
             if iva > 0:
                 cur.execute("""
                     INSERT INTO accounting_lines
-                    (entry_id, account_code, account_name, debit, credit, line_description)
-                    VALUES (%s, '2108', 'IVA por pagar', 0, %s, %s)
+                    VALUES (DEFAULT, %s, '2108', 'IVA por pagar', 0, %s, %s)
                 """, (entry_id, iva, detail_text))
-
-        # ========================================================
-        # 8️⃣ CORREGIR ASIENTO EXISTENTE (🔒 PERIODO)
-        # ========================================================
-        else:
-            # 🔥🔥🔥 CORRECCIÓN CLAVE DE PERIODO 🔥🔥🔥
-            cur.execute("""
-                UPDATE accounting_entries
-                SET entry_date = %s,
-                    period = %s
-                WHERE id = %s
-            """, (fecha, period, entry_id))
-
-            # Descripción
-            cur.execute("""
-                UPDATE accounting_lines
-                SET line_description = %s
-                WHERE entry_id = %s
-                  AND (line_description IS NULL OR BTRIM(line_description) = '')
-            """, (detail_text, entry_id))
-
-            # CxC
-            cur.execute("""
-                UPDATE accounting_lines
-                SET debit = %s, credit = 0, account_name = 'Cuentas por cobrar'
-                WHERE entry_id = %s
-                  AND account_code = '1101'
-            """, (total_crc, entry_id))
-
-            # Ingresos
-            cur.execute("""
-                UPDATE accounting_lines
-                SET debit = 0, credit = %s, account_name = 'Ingresos por servicios'
-                WHERE entry_id = %s
-                  AND account_code = '4101'
-            """, (subtotal, entry_id))
-
-            # IVA
-            if iva > 0:
-                cur.execute("""
-                    SELECT id
-                    FROM accounting_lines
-                    WHERE entry_id = %s
-                      AND account_code = '2108'
-                    LIMIT 1
-                """, (entry_id,))
-                row_iva = cur.fetchone()
-
-                if row_iva:
-                    cur.execute("""
-                        UPDATE accounting_lines
-                        SET debit = 0, credit = %s, account_name = 'IVA por pagar'
-                        WHERE id = %s
-                    """, (iva, row_iva["id"]))
-                else:
-                    cur.execute("""
-                        INSERT INTO accounting_lines
-                        (entry_id, account_code, account_name, debit, credit, line_description)
-                        VALUES (%s, '2108', 'IVA por pagar', 0, %s, %s)
-                    """, (entry_id, iva, detail_text))
-            else:
-                cur.execute("""
-                    DELETE FROM accounting_lines
-                    WHERE entry_id = %s
-                      AND account_code = '2108'
-                """, (entry_id,))
 
     conn.commit()
 

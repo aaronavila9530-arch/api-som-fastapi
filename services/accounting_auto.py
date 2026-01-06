@@ -90,9 +90,7 @@ def sync_collections_to_accounting(conn):
     tc = float(row_tc["rate"])
 
     # ============================================================
-    # 2️⃣ TRAER COLLECTIONS (TODAS) PARA CREAR O CORREGIR
-    #    - Si ya existe asiento: CORREGIR
-    #    - Si no existe: CREAR
+    # 2️⃣ TRAER COLLECTIONS
     # ============================================================
     cur.execute("""
         SELECT
@@ -119,11 +117,14 @@ def sync_collections_to_accounting(conn):
         if total_raw <= 0:
             continue
 
+        # ========================================================
+        # 🔒 FECHA Y PERIODO (ÚNICO CAMBIO FUNCIONAL)
+        # ========================================================
         fecha = c.get("fecha_emision") or today
-        period = fecha.strftime("%Y-%m")
+        period = fecha.strftime("%Y-%m")   # ← YYYY-MM real (2025-12 / 2026-01)
 
         # ========================================================
-        # 3️⃣ PAÍS DEL CLIENTE (cliente.nombrecomercial)
+        # 3️⃣ PAÍS DEL CLIENTE
         # ========================================================
         cur.execute("""
             SELECT pais
@@ -143,7 +144,7 @@ def sync_collections_to_accounting(conn):
             total_crc = round(total_raw, 2)
 
         # ========================================================
-        # 5️⃣ IVA SOLO SI CLIENTE ES COSTA RICA
+        # 5️⃣ IVA
         # ========================================================
         if pais == "costa rica":
             subtotal = round(total_crc / 1.13, 2)
@@ -153,7 +154,7 @@ def sync_collections_to_accounting(conn):
             iva = 0.0
 
         # ========================================================
-        # 6️⃣ ¿EXISTE YA EL ASIENTO?
+        # 6️⃣ ¿EXISTE ASIENTO?
         # ========================================================
         cur.execute("""
             SELECT id
@@ -168,7 +169,7 @@ def sync_collections_to_accounting(conn):
         detail_text = f"From Collections {numero}"
 
         # ========================================================
-        # 7️⃣ SI NO EXISTE → CREAR
+        # 7️⃣ CREAR ASIENTO
         # ========================================================
         if not entry_id:
 
@@ -192,42 +193,41 @@ def sync_collections_to_accounting(conn):
             ))
             entry_id = cur.fetchone()["id"]
 
-            # CxC (debe)
+            # CxC
             cur.execute("""
                 INSERT INTO accounting_lines
                 (entry_id, account_code, account_name, debit, credit, line_description)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (
-                entry_id, "1101", "Cuentas por cobrar",
-                total_crc, 0, detail_text
-            ))
+                VALUES (%s, '1101', 'Cuentas por cobrar', %s, 0, %s)
+            """, (entry_id, total_crc, detail_text))
 
-            # Ingresos (haber)
+            # Ingresos
             cur.execute("""
                 INSERT INTO accounting_lines
                 (entry_id, account_code, account_name, debit, credit, line_description)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (
-                entry_id, "4101", "Ingresos por servicios",
-                0, subtotal, detail_text
-            ))
+                VALUES (%s, '4101', 'Ingresos por servicios', 0, %s, %s)
+            """, (entry_id, subtotal, detail_text))
 
-            # IVA por pagar (haber)
+            # IVA
             if iva > 0:
                 cur.execute("""
                     INSERT INTO accounting_lines
                     (entry_id, account_code, account_name, debit, credit, line_description)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, (
-                    entry_id, "2108", "IVA por pagar",
-                    0, iva, detail_text
-                ))
+                    VALUES (%s, '2108', 'IVA por pagar', 0, %s, %s)
+                """, (entry_id, iva, detail_text))
 
         # ========================================================
-        # 8️⃣ SI YA EXISTE → CORREGIR (ESTO ES LO QUE TE FALTABA)
+        # 8️⃣ CORREGIR ASIENTO EXISTENTE (🔒 PERIODO)
         # ========================================================
         else:
-            # Asegurar descripción si está vacía
+            # 🔥🔥🔥 CORRECCIÓN CLAVE DE PERIODO 🔥🔥🔥
+            cur.execute("""
+                UPDATE accounting_entries
+                SET entry_date = %s,
+                    period = %s
+                WHERE id = %s
+            """, (fecha, period, entry_id))
+
+            # Descripción
             cur.execute("""
                 UPDATE accounting_lines
                 SET line_description = %s
@@ -235,7 +235,7 @@ def sync_collections_to_accounting(conn):
                   AND (line_description IS NULL OR BTRIM(line_description) = '')
             """, (detail_text, entry_id))
 
-            # 8.1) CxC (1101) debe = total_crc
+            # CxC
             cur.execute("""
                 UPDATE accounting_lines
                 SET debit = %s, credit = 0, account_name = 'Cuentas por cobrar'
@@ -243,7 +243,7 @@ def sync_collections_to_accounting(conn):
                   AND account_code = '1101'
             """, (total_crc, entry_id))
 
-            # 8.2) Ingresos (4101) haber = subtotal
+            # Ingresos
             cur.execute("""
                 UPDATE accounting_lines
                 SET debit = 0, credit = %s, account_name = 'Ingresos por servicios'
@@ -251,7 +251,7 @@ def sync_collections_to_accounting(conn):
                   AND account_code = '4101'
             """, (subtotal, entry_id))
 
-            # 8.3) IVA (2108) si aplica: crear o actualizar, si no aplica: eliminar
+            # IVA
             if iva > 0:
                 cur.execute("""
                     SELECT id
@@ -272,8 +272,8 @@ def sync_collections_to_accounting(conn):
                     cur.execute("""
                         INSERT INTO accounting_lines
                         (entry_id, account_code, account_name, debit, credit, line_description)
-                        VALUES (%s, %s, %s, %s, %s, %s)
-                    """, (entry_id, "2108", "IVA por pagar", 0, iva, detail_text))
+                        VALUES (%s, '2108', 'IVA por pagar', 0, %s, %s)
+                    """, (entry_id, iva, detail_text))
             else:
                 cur.execute("""
                     DELETE FROM accounting_lines

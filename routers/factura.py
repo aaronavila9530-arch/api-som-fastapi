@@ -369,28 +369,33 @@ def crear_factura_electronica(
         # =====================================================
         # 2️⃣ BLOQUEO REAL (SERVICIO YA FACTURADO)
         # =====================================================
-        if servicio["factura"] is not None:
+        if servicio["factura"] is not None and str(servicio["factura"]).strip() != "":
             raise HTTPException(
                 400,
                 f"Servicio {servicio_id} ya tiene una factura asociada"
             )
 
         # =====================================================
-        # 3️⃣ PARSEAR XML (FE / FEE)
+        # 3️⃣ PARSEAR XML (FE / FEE) → TOMAR NumeroConsecutivo
         # =====================================================
         xml_bytes = file.file.read()
         data_xml = parse_factura_electronica_from_bytes(xml_bytes)
 
+        # ✅ ESTE ES EL NÚMERO QUE DEBE QUEDAR EN SERVICIOS.factura
         numero_documento = (
-            data_xml.get("numero_factura")
+            data_xml.get("numero_consecutivo")
+            or data_xml.get("NumeroConsecutivo")
+            or data_xml.get("numero_factura")
             or data_xml.get("clave_electronica")
         )
 
         if not numero_documento:
             raise HTTPException(
                 400,
-                "XML inválido: no se pudo obtener número de factura"
+                "XML inválido: no se pudo obtener NumeroConsecutivo"
             )
+
+        numero_documento = str(numero_documento).strip()
 
         # =====================================================
         # 4️⃣ VALIDAR DUPLICADO FISCAL (BLINDAJE REAL)
@@ -503,7 +508,7 @@ def crear_factura_electronica(
             RETURNING id
         """, (
             "ELECTRONICA",
-            numero_documento,
+            numero_documento,             # ✅ NumeroConsecutivo
             servicio["codigo_cliente"],
             servicio["cliente"],
             fecha_emision,
@@ -521,7 +526,8 @@ def crear_factura_electronica(
         invoicing_id = cur.fetchone()["id"]
 
         # =====================================================
-        # 8️⃣ ASOCIAR FACTURA AL SERVICIO (FUENTE DE VERDAD)
+        # 8️⃣ ASOCIAR FACTURA AL SERVICIO (CORRECTO)
+        #    ✅ servicios.factura DEBE GUARDAR EL NUMERO DOCUMENTO
         # =====================================================
         cur.execute("""
             UPDATE servicios
@@ -532,7 +538,7 @@ def crear_factura_electronica(
                 terminos_pago = %s
             WHERE consec = %s
         """, (
-            invoicing_id,
+            numero_documento,   # ✅ antes estabas guardando invoicing_id (mal)
             total,
             fecha_emision,
             termino_pago,
@@ -544,7 +550,7 @@ def crear_factura_electronica(
         return {
             "status": "ok",
             "tipo_xml": tipo_xml,
-            "numero_documento": numero_documento,
+            "numero_documento": numero_documento,  # ✅ NumeroConsecutivo
             "invoicing_id": invoicing_id,
             "pdf_preview": pdf_path
         }

@@ -457,17 +457,17 @@ def create_manual_obligation(
     }
 
 # ============================================================
-# 📥 UPLOAD XML (FACTURA ELECTRÓNICA / NC) — BLINDADO REAL
+# 📥 UPLOAD XML (FACTURA / NC) — 100% BLINDADO
 # ============================================================
 @router.post("/upload/xml")
 def upload_invoice_xml(
     file: UploadFile = File(...),
     conn=Depends(get_db)
 ):
-    """
-    Carga XML de Factura Electrónica / Nota de Crédito (CR)
-    Soporta namespaces, variantes ATV, FE, NC, v4.x
-    """
+    from xml.etree import ElementTree as ET
+    from datetime import datetime, date, timedelta
+    import os
+    import shutil
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
 
@@ -476,87 +476,120 @@ def upload_invoice_xml(
     # ============================================================
     os.makedirs("storage/invoice_to_pay/xml", exist_ok=True)
 
-    timestamp = int(datetime.now().timestamp())
+    ts = int(datetime.now().timestamp())
     safe_name = file.filename.replace(" ", "_")
-    filename = f"{timestamp}_{safe_name}"
-    filepath = os.path.join("storage/invoice_to_pay/xml", filename)
+    filepath = f"storage/invoice_to_pay/xml/{ts}_{safe_name}"
 
     with open(filepath, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
     # ============================================================
-    # PARSE XML (ELIMINANDO NAMESPACES)
+    # PARSE XML (TOLERANTE)
     # ============================================================
     try:
         tree = ET.parse(filepath)
         root = tree.getroot()
 
-        # 🔥 STRIP NAMESPACES (CLAVE DEL ÉXITO)
-        for elem in root.iter():
-            if "}" in elem.tag:
-                elem.tag = elem.tag.split("}", 1)[1]
+        # Namespace dinámico
+        if "}" in root.tag:
+            ns_uri = root.tag.split("}")[0].strip("{")
+            ns = {"fe": ns_uri}
+            p = "fe:"
+        else:
+            ns = {}
+            p = ""
 
-        def find_text(path, default=None):
-            node = root.find(path)
-            if node is not None and node.text:
-                return node.text.strip()
+        def find_text(paths, default=None):
+            for path in paths:
+                node = root.find(path, ns)
+                if node is not None and node.text:
+                    return node.text.strip()
             return default
 
-        # ----------------------------
+        # ------------------------------------------------------------
+        # TIPO DOCUMENTO
+        # ------------------------------------------------------------
+        is_credit_note = root.find(f".//{p}NotaCreditoElectronica", ns) is not None \
+                         or "NotaCredito" in root.tag
+
+        obligation_type = (
+            "SUPPLIER_CREDIT_NOTE" if is_credit_note else "SUPPLIER_INVOICE"
+        )
+
+        # ------------------------------------------------------------
         # CLAVE
-        # ----------------------------
-        clave = find_text(".//Clave")
+        # ------------------------------------------------------------
+        clave = find_text([
+            f".//{p}Clave",
+            ".//Clave"
+        ])
         if not clave:
             raise ValueError("XML sin Clave")
 
-        # ----------------------------
+        # ------------------------------------------------------------
         # FECHA EMISIÓN
-        # ----------------------------
-        fecha_raw = find_text(".//FechaEmision")
+        # ------------------------------------------------------------
+        fecha_raw = find_text([
+            f".//{p}FechaEmision",
+            ".//FechaEmision"
+        ])
         if not fecha_raw:
             raise ValueError("XML sin FechaEmision")
 
-        issue_date_val = date.fromisoformat(fecha_raw.split("T")[0])
+        issue_date = date.fromisoformat(fecha_raw.split("T")[0])
 
-        # ----------------------------
+        # ------------------------------------------------------------
         # EMISOR
-        # ----------------------------
-        emisor = (
-            find_text(".//Emisor/Nombre")
-            or find_text(".//Nombre")
-            or "PROVEEDOR DESCONOCIDO"
-        )
+        # ------------------------------------------------------------
+        emisor = find_text([
+            f".//{p}Emisor/{p}Nombre",
+            f".//{p}Nombre"
+        ], "PROVEEDOR DESCONOCIDO")
 
-        # ----------------------------
+        # ------------------------------------------------------------
         # MONEDA
-        # ----------------------------
-        moneda = find_text(".//CodigoMoneda", "CRC")
+        # ------------------------------------------------------------
+        moneda = find_text([
+            f".//{p}CodigoMoneda",
+            ".//CodigoMoneda"
+        ], "CRC")
 
-        # ----------------------------
-        # TOTAL
-        # ----------------------------
-        total_raw = find_text(".//TotalComprobante")
+        # ------------------------------------------------------------
+        # TOTAL (FACTURA / NC)
+        # ------------------------------------------------------------
+        total_raw = find_text([
+            f".//{p}TotalComprobante",
+            f".//{p}MontoTotal",
+            ".//TotalComprobante"
+        ])
+
         if not total_raw:
             raise ValueError("XML sin TotalComprobante")
 
         total = float(total_raw)
 
-        # ----------------------------
-        # PLAZO CRÉDITO
-        # ----------------------------
-        plazo_raw = find_text(".//PlazoCredito")
-        term_days = int(plazo_raw) if plazo_raw and plazo_raw.isdigit() else 30
+        if is_credit_note:
+            total = total * -1  # NC = negativo
 
-        due_date_val = issue_date_val + timedelta(days=term_days)
+        # ------------------------------------------------------------
+        # PLAZO
+        # ------------------------------------------------------------
+        plazo_raw = find_text([
+            f".//{p}PlazoCredito",
+            ".//PlazoCredito"
+        ])
+
+        term_days = int(plazo_raw) if plazo_raw and plazo_raw.isdigit() else 30
+        due_date = issue_date + timedelta(days=term_days)
 
     except Exception as e:
         raise HTTPException(
             status_code=400,
-            detail=f"XML inválido o no soportado: {str(e)}"
+            detail=f"Error parsing XML: {str(e)}"
         )
 
     # ============================================================
-    # INSERTAR EN payment_obligations
+    # INSERTAR payment_obligations
     # ============================================================
     try:
         cur.execute("""
@@ -567,24 +600,15 @@ def upload_invoice_xml(
                 payee_name,
                 obligation_type,
                 reference,
-                vessel,
-                country,
-                operation,
-                service_id,
                 issue_date,
                 due_date,
+                country,
                 currency,
                 total,
                 balance,
                 status,
                 origin,
-                file_pdf,
                 file_xml,
-                is_recurring,
-                amount_type,
-                fixed_amount,
-                due_day,
-                auto_generate,
                 active,
                 notes,
                 created_at,
@@ -595,26 +619,17 @@ def upload_invoice_xml(
                 'SUPPLIER',
                 NULL,
                 %s,
-                'SUPPLIER_INVOICE',
                 %s,
-                NULL,
+                %s,
+                %s,
+                %s,
                 'Costa Rica',
-                NULL,
-                NULL,
-                %s,
-                %s,
                 %s,
                 %s,
                 %s,
                 'PENDING',
                 'UPLOAD',
-                NULL,
                 %s,
-                FALSE,
-                NULL,
-                NULL,
-                NULL,
-                FALSE,
                 TRUE,
                 %s,
                 NOW(),
@@ -622,14 +637,15 @@ def upload_invoice_xml(
             )
         """, (
             emisor,
+            obligation_type,
             clave,
-            issue_date_val,
-            due_date_val,
+            issue_date,
+            due_date,
             moneda,
             total,
             total,
             filepath,
-            f"Factura electrónica cargada por XML ({clave})"
+            f"Documento cargado por XML ({clave})"
         ))
 
         conn.commit()
@@ -638,11 +654,12 @@ def upload_invoice_xml(
         conn.rollback()
         raise HTTPException(
             status_code=500,
-            detail=f"DB error XML: {str(e)}"
+            detail=f"DB insert error: {str(e)}"
         )
 
     return {
         "message": "XML procesado correctamente",
+        "type": obligation_type,
         "reference": clave,
         "supplier": emisor,
         "total": total,

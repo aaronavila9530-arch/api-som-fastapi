@@ -457,7 +457,7 @@ def create_manual_obligation(
     }
 
 # ============================================================
-# 📥 UPLOAD XML (FACTURA ELECTRÓNICA) — ITP ROBUSTO / BLINDADO
+# 📥 UPLOAD XML (FACTURA ELECTRÓNICA / NC) — BLINDADO REAL
 # ============================================================
 @router.post("/upload/xml")
 def upload_invoice_xml(
@@ -465,9 +465,8 @@ def upload_invoice_xml(
     conn=Depends(get_db)
 ):
     """
-    Carga un XML de Factura Electrónica (Costa Rica)
-    y crea una obligación de pago (ITP) de forma tolerante
-    a variaciones reales de XML (ATV / proveedores).
+    Carga XML de Factura Electrónica / Nota de Crédito (CR)
+    Soporta namespaces, variantes ATV, FE, NC, v4.x
     """
 
     cur = conn.cursor(cursor_factory=RealDictCursor)
@@ -486,82 +485,66 @@ def upload_invoice_xml(
         shutil.copyfileobj(file.file, buffer)
 
     # ============================================================
-    # PARSE XML (ULTRA ROBUSTO)
+    # PARSE XML (ELIMINANDO NAMESPACES)
     # ============================================================
     try:
         tree = ET.parse(filepath)
         root = tree.getroot()
 
-        # --------------------------------------------------------
-        # Namespace dinámico (o sin namespace)
-        # --------------------------------------------------------
-        if "}" in root.tag:
-            ns_uri = root.tag.split("}")[0].strip("{")
-            ns = {"fe": ns_uri}
-            p = "fe:"
-        else:
-            ns = {}
-            p = ""
+        # 🔥 STRIP NAMESPACES (CLAVE DEL ÉXITO)
+        for elem in root.iter():
+            if "}" in elem.tag:
+                elem.tag = elem.tag.split("}", 1)[1]
 
-        def find_text(xpath, default=None):
-            """
-            Busca texto de forma segura.
-            """
-            try:
-                node = root.find(xpath, ns)
-                if node is not None and node.text:
-                    return node.text.strip()
-            except Exception:
-                pass
+        def find_text(path, default=None):
+            node = root.find(path)
+            if node is not None and node.text:
+                return node.text.strip()
             return default
 
-        # --------------------------------------------------------
-        # CLAVE (OBLIGATORIA)
-        # --------------------------------------------------------
-        clave = find_text(f".//{p}Clave")
+        # ----------------------------
+        # CLAVE
+        # ----------------------------
+        clave = find_text(".//Clave")
         if not clave:
             raise ValueError("XML sin Clave")
 
-        # --------------------------------------------------------
+        # ----------------------------
         # FECHA EMISIÓN
-        # --------------------------------------------------------
-        fecha_raw = find_text(f".//{p}FechaEmision")
+        # ----------------------------
+        fecha_raw = find_text(".//FechaEmision")
         if not fecha_raw:
             raise ValueError("XML sin FechaEmision")
 
-        # Limpieza ISO
-        fecha_raw = fecha_raw.replace("Z", "")
         issue_date_val = date.fromisoformat(fecha_raw.split("T")[0])
 
-        # --------------------------------------------------------
-        # EMISOR (MUY VARIABLE)
-        # --------------------------------------------------------
+        # ----------------------------
+        # EMISOR
+        # ----------------------------
         emisor = (
-            find_text(f".//{p}Emisor/{p}Nombre")
-            or find_text(f".//{p}Nombre")
+            find_text(".//Emisor/Nombre")
+            or find_text(".//Nombre")
             or "PROVEEDOR DESCONOCIDO"
         )
 
-        # --------------------------------------------------------
-        # MONEDA (DEFAULT CRC)
-        # --------------------------------------------------------
-        moneda = find_text(f".//{p}CodigoMoneda", "CRC")
+        # ----------------------------
+        # MONEDA
+        # ----------------------------
+        moneda = find_text(".//CodigoMoneda", "CRC")
 
-        # --------------------------------------------------------
+        # ----------------------------
         # TOTAL
-        # --------------------------------------------------------
-        total_raw = find_text(f".//{p}TotalComprobante")
+        # ----------------------------
+        total_raw = find_text(".//TotalComprobante")
         if not total_raw:
             raise ValueError("XML sin TotalComprobante")
 
-        # Normalizar número
-        total_raw = total_raw.replace(",", "")
         total = float(total_raw)
 
-        # --------------------------------------------------------
+        # ----------------------------
         # PLAZO CRÉDITO
-        # --------------------------------------------------------
-        plazo_raw = find_text(f".//{p}PlazoCredito")
+        # ----------------------------
+        plazo_raw = find_text(".//PlazoCredito")
         term_days = int(plazo_raw) if plazo_raw and plazo_raw.isdigit() else 30
 
         due_date_val = issue_date_val + timedelta(days=term_days)
@@ -569,7 +552,7 @@ def upload_invoice_xml(
     except Exception as e:
         raise HTTPException(
             status_code=400,
-            detail=f"XML inválido o no compatible: {str(e)}"
+            detail=f"XML inválido o no soportado: {str(e)}"
         )
 
     # ============================================================
@@ -655,17 +638,15 @@ def upload_invoice_xml(
         conn.rollback()
         raise HTTPException(
             status_code=500,
-            detail=f"DB error creando obligación: {str(e)}"
+            detail=f"DB error XML: {str(e)}"
         )
 
     return {
-        "message": "XML cargado correctamente",
+        "message": "XML procesado correctamente",
         "reference": clave,
         "supplier": emisor,
         "total": total,
-        "currency": moneda,
-        "issue_date": issue_date_val,
-        "due_date": due_date_val
+        "currency": moneda
     }
 
 

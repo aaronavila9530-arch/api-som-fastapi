@@ -126,10 +126,14 @@ def search_invoice_to_pay(
     # FILTRO POR ESTADO
     # =================
     if status:
-        filters.append("status = %s")
-        params.append(status)
-    else:
-        filters.append("status <> 'PAID'")
+        status = status.upper()
+
+        if status == "ALL":
+            # 🔥 Sin filtro: trae TODOS los registros
+            pass
+        else:
+            filters.append("status = %s")
+            params.append(status)
 
     # =================================
     # FILTRO POR TIPO DE OBLIGACIÓN
